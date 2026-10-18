@@ -1,0 +1,56 @@
+{
+  "generator": "scripts/generate_samples.py",
+  "seed": 20261018,
+  "warning": "Données 100 % synthétiques générées par ORACLE AI. Elles ne proviennent pas des jeux UCI et ne représentent aucune entreprise ni usine réelle.",
+  "samples": [
+    {
+      "id": "retail-synthetic",
+      "file": "synthetic_retail_2024.csv",
+      "title": "Retail — transactions synthétiques 2024",
+      "domain": "retail",
+      "description": "Transactions de vente simulées sur 12 mois (schéma de colonnes Online Retail), avec annulations, retours, doublons et une journée promo.",
+      "synthetic": true,
+      "provenance": "Synthétique — Commandes/jour ~ Poisson(14 × facteur jour de semaine × hausse T4 linéaire jusqu'à +35 %) ; 1–6 lignes par facture ; quantité ~ géométrique(0,25) ; prix = prix de base log-normal par produit.",
+      "rows": 18337,
+      "meta": {
+        "injected_events": {
+          "promo_spike_day": "2024-06-14",
+          "promo_spike_factor": 3.0,
+          "extreme_quantity_rows": 6,
+          "cancelled_invoices": 102,
+          "zero_price_rows": 53,
+          "exact_duplicate_rows": 89,
+          "missing_customer_share": 0.2
+        },
+        "mechanism": "Commandes/jour ~ Poisson(14 × facteur jour de semaine × hausse T4 linéaire jusqu'à +35 %) ; 1–6 lignes par facture ; quantité ~ géométrique(0,25) ; prix = prix de base log-normal par produit."
+      }
+    },
+    {
+      "id": "retail-synthetic-xlsx",
+      "file": "synthetic_retail_2024_jan_feb.xlsx",
+      "title": "Retail — extrait Excel (janv.–févr.)",
+      "domain": "retail",
+      "description": "Sous-ensemble du jeu précédent au format .xlsx, pour tester l'import Excel.",
+      "synthetic": true,
+      "provenance": "Synthétique — extrait de synthetic_retail_2024.csv",
+      "rows": 2990
+    },
+    {
+      "id": "maintenance-synthetic",
+      "file": "synthetic_maintenance.csv",
+      "title": "Maintenance — capteurs machine synthétiques",
+      "domain": "maintenance",
+      "description": "5 000 mesures simulées (schéma de colonnes AI4I 2020) avec label de panne et modes de panne.",
+      "synthetic": true,
+      "provenance": "Synthétique — Règles inspirées de la documentation publique AI4I 2020 : TWF (usure 200–240 min, p=5 %), HDF (ΔT < 8,6 K et vitesse < 1380 tr/min), PWF (puissance hors [3500, 9000] W), OSF (usure × couple > 11000/12000/13000 selon L/M/H), RNF (0,1 %). Valeurs générées indépendamment : ce n'est pas le jeu AI4I.",
+      "rows": 5000,
+      "meta": {
+        "injected_events": {
+          "missing_air_temperature_rows": 25
+        },
+        "failure_rate": 0.0554,
+        "mechanism": "Règles inspirées de la documentation publique AI4I 2020 : TWF (usure 200–240 min, p=5 %), HDF (ΔT < 8,6 K et vitesse < 1380 tr/min), PWF (puissance hors [3500, 9000] W), OSF (usure × couple > 11000/12000/13000 selon L/M/H), RNF (0,1 %). Valeurs générées indépendamment : ce n'est pas le jeu AI4I."
+      }
+    }
+  ]
+}

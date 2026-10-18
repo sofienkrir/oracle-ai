@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+import io
+import zipfile
+
+import pandas as pd
+import pytest
+
+from app.core.config import Settings
+from app.core.exceptions import FileTooLargeError, InvalidFileError, UnsupportedFileTypeError
+from app.data.ingestion import detect_format, ingest_bytes
+from tests.conftest import xlsx_bytes
+
+
+def test_csv_comma_reads_all_rows_including_duplicates(settings: Settings, known_csv: bytes):
+    res = ingest_bytes(known_csv, "known.csv", settings)
+    assert res.file_format == "csv"
+    assert res.df.shape == (20, 9)  # aucune ligne supprimée, doublon compris
+    assert res.parse_info == {"encoding": "utf-8-sig", "delimiter": ","}
+    assert len(res.sha256) == 64
+
+
+def test_semicolon_and_cp1252_detected(settings: Settings):
+    content = "ville;montant\nGabès;12\nSfax;7\n".encode("cp1252")
+    res = ingest_bytes(content, "f.csv", settings)
+    assert res.parse_info == {"encoding": "cp1252", "delimiter": ";"}
+    assert res.df["ville"].tolist() == ["Gabès", "Sfax"]
+
+
+def test_lossless_numeric_conversion_is_traced(settings: Settings):
+    content = b"a,b,zip,mixed\n1,1.5,0123,1\n2,2.5,0456,x\n"
+    res = ingest_bytes(content, "f.csv", settings)
+    assert str(res.df["a"].dtype) == "Int64"
+    assert res.df["b"].dtype == "float64"
+    # zéros de tête : conservé en texte (conversion avec perte refusée)
+    assert res.df["zip"].tolist() == ["0123", "0456"]
+    assert not pd.api.types.is_numeric_dtype(res.df["mixed"])
+    converted = {t["column"] for t in res.transformations if t["action"] == "text_to_numeric"}
+    assert converted == {"a", "b"}
+
+
+def test_duplicate_headers_reported(settings: Settings):
+    res = ingest_bytes(b"x,x\n1,2\n", "f.csv", settings)
+    assert any(t["action"] == "rename_duplicate_headers" for t in res.transformations)
+
+
+@pytest.mark.parametrize(
+    ("content", "exc"),
+    [
+        (b"", InvalidFileError),
+        (b"a,b\n", InvalidFileError),
+        (b"a,b\n1,2\n3,4,5\n", InvalidFileError),
+        (b"a,b\n\x00\x01,2\n", InvalidFileError),
+        (b"a,b\n1,2,3\n4,5,6\n", InvalidFileError),
+    ],
+    ids=["empty", "header-only", "ragged", "binary", "extra-field"],
+)
+def test_invalid_csv_rejected_with_message(settings: Settings, content: bytes, exc: type):
+    with pytest.raises(exc) as info:
+        ingest_bytes(content, "f.csv", settings)
+    assert info.value.message
+
+
+@pytest.mark.parametrize(
+    "name", ["data.exe", "macro.xlsm", "old.xls", "noext", "report.xlsb", "x.json"]
+)
+def test_unsupported_extensions(name: str):
+    with pytest.raises(UnsupportedFileTypeError):
+        detect_format(name)
+
+
+def test_size_limit(settings: Settings):
+    small = settings.model_copy(update={"max_upload_mb": 0.0001})
+    with pytest.raises(FileTooLargeError):
+        ingest_bytes(b"a\n" + b"1\n" * 200, "f.csv", small)
+
+
+def test_row_and_column_limits(settings: Settings):
+    with pytest.raises(FileTooLargeError):
+        ingest_bytes(b"a\n1\n2\n3\n", "f.csv", settings.model_copy(update={"max_rows": 2}))
+    with pytest.raises(InvalidFileError):
+        ingest_bytes(b"a,b,c\n1,2,3\n", "f.csv", settings.model_copy(update={"max_columns": 2}))
+
+
+def test_valid_xlsx(settings: Settings):
+    df = pd.DataFrame({"d": pd.to_datetime(["2024-01-01", "2024-01-02"]), "v": [1.5, 2.0]})
+    res = ingest_bytes(xlsx_bytes(df), "f.xlsx", settings)
+    assert res.file_format == "xlsx"
+    assert res.df.shape == (2, 2)
+    assert pd.api.types.is_datetime64_any_dtype(res.df["d"])
+
+
+def test_fake_xlsx_rejected(settings: Settings, known_csv: bytes):
+    with pytest.raises(InvalidFileError):
+        ingest_bytes(known_csv, "renamed.xlsx", settings)
+
+
+def test_xlsx_with_macro_rejected(settings: Settings):
+    buf = io.BytesIO(xlsx_bytes(pd.DataFrame({"a": [1]})))
+    with zipfile.ZipFile(buf, "a") as zf:
+        zf.writestr("xl/vbaProject.bin", b"fake")
+    with pytest.raises(UnsupportedFileTypeError):
+        ingest_bytes(buf.getvalue(), "f.xlsx", settings)
+
+
+def test_xlsx_decompression_bomb_guard(settings: Settings):
+    content = xlsx_bytes(pd.DataFrame({"a": range(10)}))
+    tiny = settings.model_copy(update={"max_xlsx_uncompressed_mb": 0.0001})
+    with pytest.raises(FileTooLargeError):
+        ingest_bytes(content, "f.xlsx", tiny)
