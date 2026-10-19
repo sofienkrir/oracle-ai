@@ -20,6 +20,7 @@ from pathlib import Path
 RAW = Path(__file__).resolve().parents[1] / "datasets" / "raw"
 
 SOURCES = {
+    "online_retail_ii": "https://archive.ics.uci.edu/static/public/502/online+retail+ii.zip",
     "online_retail": "https://archive.ics.uci.edu/static/public/352/online+retail.zip",
     "ai4i_2020": (
         "https://archive.ics.uci.edu/static/public/601/"

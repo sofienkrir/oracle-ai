@@ -108,3 +108,39 @@ def test_xlsx_decompression_bomb_guard(settings: Settings):
     tiny = settings.model_copy(update={"max_xlsx_uncompressed_mb": 0.0001})
     with pytest.raises(FileTooLargeError):
         ingest_bytes(content, "f.xlsx", tiny)
+
+
+def _two_sheet_xlsx(rows: int) -> bytes:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf) as w:
+        pd.DataFrame({"a": range(rows), "b": ["x" * 20] * rows}).to_excel(
+            w, sheet_name="s1", index=False
+        )
+        pd.DataFrame({"a": range(rows), "b": ["y" * 20] * rows}).to_excel(
+            w, sheet_name="s2", index=False
+        )
+    return buf.getvalue()
+
+
+def test_only_first_sheet_counts_toward_uncompressed_limit(settings: Settings):
+    content = _two_sheet_xlsx(20_000)
+    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+        sizes = {i.filename: i.file_size for i in zf.infolist()}
+    sheet = sizes["xl/worksheets/sheet1.xml"]
+    total = sum(sizes.values())
+    # limite entre « ce qui est lu » et « tout le classeur »
+    limit_mb = (total - sheet / 2) / 1_048_576
+    res = ingest_bytes(
+        content, "f.xlsx", settings.model_copy(update={"max_xlsx_uncompressed_mb": limit_mb})
+    )
+    assert res.df.shape == (20_000, 2)
+    assert res.parse_info["sheets_available"] == ["s1", "s2"]
+
+
+def test_high_compression_ratio_rejected(settings: Settings):
+    buf = io.BytesIO(xlsx_bytes(pd.DataFrame({"a": [1]})))
+    with zipfile.ZipFile(buf, "a", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("xl/worksheets/sheet9.xml", b"\0" * (30 * 1_048_576))
+    with pytest.raises(InvalidFileError) as e:
+        ingest_bytes(buf.getvalue(), "f.xlsx", settings)
+    assert "compression" in e.value.message

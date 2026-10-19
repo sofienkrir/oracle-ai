@@ -105,21 +105,19 @@ def _read_xlsx(content: bytes, settings: Settings) -> tuple[pd.DataFrame, dict[s
         )
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
-            names = zf.namelist()
-            uncompressed = sum(i.file_size for i in zf.infolist())
+            infos = zf.infolist()
+            names = [i.filename for i in infos]
+            if "xl/workbook.xml" not in names:
+                raise InvalidFileError(
+                    "Le fichier ne contient pas de classeur Excel (xl/workbook.xml)."
+                )
+            if any(n.lower().endswith("vbaproject.bin") for n in names):
+                raise UnsupportedFileTypeError("Le classeur contient des macros : import refusé.")
+            first_sheet = _first_sheet_part(zf)
     except zipfile.BadZipFile as exc:
         raise InvalidFileError("Classeur Excel corrompu ou illisible.") from exc
 
-    if "xl/workbook.xml" not in names:
-        raise InvalidFileError("Le fichier ne contient pas de classeur Excel (xl/workbook.xml).")
-    if any(n.lower().endswith("vbaproject.bin") for n in names):
-        raise UnsupportedFileTypeError("Le classeur contient des macros : import refusé.")
-    limit = settings.max_xlsx_uncompressed_mb * 1_048_576
-    if uncompressed > limit:
-        raise FileTooLargeError(
-            f"Le classeur décompressé dépasse {settings.max_xlsx_uncompressed_mb:g} Mo "
-            "(protection contre les archives malveillantes)."
-        )
+    _check_zip_entries(infos, first_sheet, settings)
 
     engine = _excel_engine()
     try:
@@ -143,6 +141,69 @@ def _read_xlsx(content: bytes, settings: Settings) -> tuple[pd.DataFrame, dict[s
         "(valeurs mises en cache par Excel).",
     }
     return df, info
+
+
+_SMALL_XML_LIMIT = 2 * 1_048_576
+_SHEET_TAG = re.compile(rb"<(?:\w+:)?sheet\b[^>]*?\br:id=\"([^\"]+)\"")
+_REL_TAG = re.compile(rb"<(?:\w+:)?Relationship\b[^>]*>")
+_ATTR = re.compile(rb'\b(Id|Target)="([^"]+)"')
+# Au-delà de ce taux de compression, une entrée est traitée comme une archive piégée.
+_MAX_COMPRESSION_RATIO = 100
+_RATIO_MIN_BYTES = 10 * 1_048_576
+
+
+def _read_small(zf: zipfile.ZipFile, name: str) -> bytes:
+    info = zf.getinfo(name)
+    if info.file_size > _SMALL_XML_LIMIT:
+        raise InvalidFileError(f"Partie « {name} » anormalement volumineuse.")
+    return zf.read(name)
+
+
+def _first_sheet_part(zf: zipfile.ZipFile) -> str | None:
+    """Chemin de la 1re feuille (seule lue), d'après workbook.xml et ses relations."""
+    try:
+        sheet = _SHEET_TAG.search(_read_small(zf, "xl/workbook.xml"))
+        rels = _read_small(zf, "xl/_rels/workbook.xml.rels")
+    except KeyError:
+        return None
+    if not sheet:
+        return None
+    for tag in _REL_TAG.findall(rels):
+        attrs = dict(_ATTR.findall(tag))
+        if attrs.get(b"Id") == sheet.group(1) and b"Target" in attrs:
+            target = attrs[b"Target"].decode("utf-8", "replace").lstrip("/")
+            return target if target.startswith("xl/") else f"xl/{target}"
+    return None
+
+
+def _check_zip_entries(
+    infos: list[zipfile.ZipInfo], first_sheet: str | None, settings: Settings
+) -> None:
+    """Protection anti « zip bomb » :
+    1. taux de compression anormal sur une grosse entrée → refus ;
+    2. la taille décompressée de ce qui est réellement lu (1re feuille + parties communes,
+       hors autres feuilles) ne doit pas dépasser ORACLE_MAX_XLSX_UNCOMPRESSED_MB."""
+    for i in infos:
+        if i.file_size > _RATIO_MIN_BYTES and i.file_size > _MAX_COMPRESSION_RATIO * max(
+            i.compress_size, 1
+        ):
+            raise InvalidFileError(
+                "Taux de compression anormal dans le classeur (archive potentiellement "
+                "malveillante) : import refusé."
+            )
+    read_size = sum(
+        i.file_size
+        for i in infos
+        if not i.filename.startswith("xl/worksheets/sheet") or i.filename == first_sheet
+    )
+    if first_sheet is None:  # structure inhabituelle : on reste prudent et on compte tout
+        read_size = sum(i.file_size for i in infos)
+    if read_size > settings.max_xlsx_uncompressed_mb * 1_048_576:
+        raise FileTooLargeError(
+            f"La feuille importée fait {read_size / 1_048_576:.0f} Mo une fois décompressée ; "
+            f"la limite est {settings.max_xlsx_uncompressed_mb:g} Mo "
+            "(paramètre ORACLE_MAX_XLSX_UNCOMPRESSED_MB)."
+        )
 
 
 def _excel_engine() -> str:

@@ -28,6 +28,7 @@ uv run --project backend python scripts/generate_samples.py
 
 | Jeu | Page officielle | Usage prévu | Précautions |
 |---|---|---|---|
+| **UCI Online Retail II (id 502)** — 1er test réel recommandé | https://archive.ics.uci.edu/dataset/502/online+retail+ii | Import réel ~525 k lignes (1re feuille « Year 2009-2010 »), schéma retail reconnu | Même précautions que ci-dessous ; seule la 1re feuille est importée |
 | UCI Online Retail (id 352) | https://archive.ics.uci.edu/dataset/352/online+retail | KPI, agrégation temporelle, anomalies exploratoires | Retours/annulations (`C…`), doublons, prix nuls, `CustomerID` manquants ; identifiants clients pseudonymes → ne pas republier |
 | UCI AI4I 2020 Predictive Maintenance (id 601) | https://archive.ics.uci.edu/dataset/601/ai4i+2020+predictive+maintenance+dataset | Classification de panne, seuils | **Jeu synthétique** ; forte asymétrie des classes ; colonnes TWF/HDF/PWF/OSF/RNF dérivées du label (fuite de cible) |
 | Numenta Anomaly Benchmark | https://github.com/numenta/NAB | Benchmark secondaire (étape 4) | Sous-partie à documenter ; suivre la convention d'évaluation NAB |

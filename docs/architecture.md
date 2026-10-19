@@ -28,8 +28,10 @@ calculs. Le reste de l'arborescence §8 est conservé sous `backend/app/`.
 `Import → Validation → Lecture → Profilage → Rôles → Rapport/Export → Historique`
 
 1. **Validation** (`data/ingestion.py`) : extension (`.csv`, `.xlsx` ; `.xls`, `.xlsm`, `.xlsb`
-   refusés), signature ZIP, taille, présence de macros (`vbaProject.bin`), taille décompressée
-   (anti « zip bomb »), nombre de lignes et de colonnes.
+   refusés), signature ZIP, taille, présence de macros (`vbaProject.bin`), nombre de lignes et
+   de colonnes. Anti « zip bomb » : refus de toute grosse entrée compressée plus de 100×, et
+   limite de taille décompressée appliquée à ce qui est réellement lu (1re feuille + parties
+   communes, les autres feuilles sont ignorées). Mémoire observée : ≈ 770 Mo pour 525 k lignes.
 2. **Lecture** :
    - CSV : encodage (`utf-8-sig` → `cp1252` → `latin-1`), séparateur (`, ; tab |`), lecture
      **en texte brut** puis conversion numérique **seulement si sans perte** (pas de zéros de
