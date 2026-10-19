@@ -1,10 +1,14 @@
 # Spécification — Étape 3 : Explorer & KPI
 
-> Statut : **v2 proposée, en attente de validation** (19/10/2026). v2 intègre les 5
-> clarifications demandées : convention de signe et retours, ajustements comptables, unités
-> gratuites, couverture temporelle, double réconciliation. Aucun code applicatif n'est écrit avant
-> validation. Jeu de référence : UCI Online Retail II, deux feuilles empilées (≈ 1,07 M lignes).
-> L'exemple chiffré de l'annexe A a été recalculé par un script indépendant.
+> Statut : **v3 proposée, en attente de validation** (19/10/2026). Aucun code applicatif n'est
+> écrit avant validation. Jeu de référence : UCI Online Retail II, deux feuilles empilées
+> (≈ 1,07 M lignes).
+>
+> Historique : v1 règles R0–R8 · v2 signes, ajustements, unités gratuites, couverture, double
+> réconciliation · **v3** corrections issues du recalcul indépendant (annexe D) : facturation
+> client indicative, pont pour la configuration active, options réversibles et recalcul complet,
+> valeurs manquantes, factures sans vente payante. L'annexe A est vérifiée par
+> `docs/specs/verif_annexe_a.py` (oracle indépendant, `Decimal`, sans pandas).
 
 ## 1. Objectif et principes
 
@@ -55,20 +59,21 @@ signe de quantité et signe de prix tombe dans exactement une catégorie.
 
 | Règle | Catégorie | Condition exacte (après les règles précédentes) | Traitement par défaut | Réversible |
 |---|---|---|---|---|
-| **R0** | Doublon exact | Identique sur **toutes les colonnes** à une ligne précédente (1re occurrence conservée) | Exclue des KPI | Oui |
-| **R1** | Valeur manquante | `Quantity` ou `Price` manquant / non numérique (`m` non calculable) | Exclue ; comptée en lignes, montant « non calculable » | Non |
-| **R2** | Ajustement comptable | `préfixe = A` **ou** `Price < 0` | Exclue des KPI de vente ; visible en réconciliation financière (§3.2) | Oui |
-| **R3** | Ligne non-produit **validée** | Code atypique classé par l'utilisateur (Frais de port, Remise, Frais & commissions, Ajustement manuel, Échantillon, Test, Bon cadeau, Autre), **quel que soit le préfixe** | Exclue du CA produits ; montant signé conservé dans sa sous-catégorie | Oui |
-| **R4** | Annulation incohérente | `préfixe = C` **et** `Quantity > 0` | Exclue (§3.1) | Oui (2 options) |
+| **R0** | Doublon exact | Identique sur **toutes les colonnes** à une ligne précédente (1re occurrence conservée) | Exclue des KPI | Oui (option O1) |
+| **R1** | Valeur manquante | `Quantity`, `Price`, `Invoice` ou `InvoiceDate` manquant / invalide | Exclue de **tous** les KPI (§3.7) ; comptée et listée | Non |
+| **R2** | Ajustement comptable | `préfixe = A` **ou** `Price < 0` | Exclue des KPI de vente ; visible en réconciliation financière (§3.2) | Oui (option O2) |
+| **R3** | Ligne non-produit **validée** | Code atypique classé par l'utilisateur (Frais de port, Remise, Frais & commissions, Ajustement manuel, Échantillon, Test, Bon cadeau, Autre), **quel que soit le préfixe** | Exclue du CA produits ; montant signé conservé dans sa sous-catégorie | Oui (option O5) |
+| **R4** | Annulation incohérente | `préfixe = C` **et** `Quantity > 0` | Exclue (§3.1) | Oui (option O3) |
 | **R5** | Retour produit | `préfixe = C` **et** `Quantity < 0` | **Retours** (montant négatif) | Non (définition) |
 | **R6** | Quantité nulle | `Quantity = 0` | Exclue (montant nul) | Non |
-| **R7** | Unités gratuites | `Price = 0` **et** `Quantity > 0` | Hors CA ; unités comptées à part (§3.3) | Oui |
+| **R7** | Unités gratuites | `Price = 0` **et** `Quantity > 0` | Hors CA ; unités comptées à part (§3.3) | Non (définition) |
 | **R8** | Mouvement de stock sans valeur | `Price = 0` **et** `Quantity < 0` (hors C) | Exclue (montant nul) ; listée | Non |
-| **R9** | Retour hors facture C | `Price > 0` **et** `Quantity < 0` (hors C) | Exclue ; listée « à examiner » | Oui (option « traiter comme retour ») |
+| **R9** | Retour hors facture C | `Price > 0` **et** `Quantity < 0` (hors C) | Exclue ; listée « à examiner » (§3.8) | Oui (option O4) |
 | **R10** | Vente valide | `Price > 0` **et** `Quantity > 0`, préfixe aucun ou inconnu | **Comptée** dans les ventes | — |
 
 **Marqueurs** (n'affectent pas la catégorie, affichés et comptés) :
-`F1` préfixe inconnu (ni A ni C) · `F2` code atypique **non validé** · `F3` sans `Customer ID`.
+`F1` préfixe inconnu (ni A ni C) · `F2` code atypique **non validé** (dont `StockCode` vide) ·
+`F3` sans `Customer ID`.
 
 - Un code atypique non validé (`F2`) reste dans sa catégorie normale (souvent R10 ou R5) :
   **jamais exclu automatiquement**. Bandeau : « dont X £ issus de N codes non validés ».
@@ -104,8 +109,8 @@ Taux de retour         TR  = R / VB
   dédiée de la réconciliation financière : nombre de lignes, `S_R2`, détail par facture/code,
   descriptions.
 - Impact expliqué : « Inclure les ajustements ferait passer le CA net de CAN à CAN + S_R2. »
-- Indicateur complémentaire : **Total enregistré** = `CAN + S_R3 + S_R2` (tout ce qui a un
-  montant, hors doublons, anomalies et R9), pour rapprocher d'une vision comptable.
+- *(v3 : l'indicateur « Total enregistré » de la v2 est supprimé ; il mélangeait des natures
+  différentes. La réconciliation d'intégrité §6.1 donne déjà le montant de chaque catégorie.)*
 
 ### 3.3 Unités gratuites et commandes (point 3)
 
@@ -124,14 +129,71 @@ Prix moyen unitaire  PU = VB / UP
 - Une facture ne contenant **que** des lignes gratuites n'est pas une commande ; elle est comptée
   dans « factures sans vente payante ».
 
-### 3.4 Autres indicateurs dérivés
+### 3.4 Indicateurs de facturation (distincts des indicateurs de ventes de produits)
+
+Deux familles d'indicateurs sont toujours affichées séparément :
+
+- **Ventes de produits** (VB, R, CAN, TR, C, PM, UP, UG, PU, KPI clients) : lignes R10 et R5
+  uniquement, donc **produits** au sens des règles validées.
+- **Facturation** : lignes produits **plus** les lignes non-produit validées dont la
+  sous-catégorie est marquée « facturée au client ».
 
 ```
-Remises (signées)          RM = S_R3[Remise]            (≤ 0 en général)
-Frais de port (signés)     FP = S_R3[Frais de port]
-CA net après remises       = CAN + RM
-Montant facturé            = CAN + RM + FP
+Remises (signées)                    RM  = S_R3[Remise]            (≤ 0 en général)
+Frais de port (signés)               FP  = S_R3[Frais de port]
+CA net après remises                 = CAN + RM
+Facturation client indicative        FCI = CAN + Σ S_R3[s] pour s « facturée au client »
 ```
+
+Marquage par défaut (modifiable, validé avec les règles) : Frais de port, Remise, Bon cadeau,
+Échantillon = facturés au client ; Frais & commissions, Ajustement manuel, Test, Autre = non.
+
+**Pourquoi v3 change la formule.** La v2 définissait `Montant facturé = CAN + RM + FP`. Avec
+cette formule, valider `GIFTX1` comme bon cadeau faisait passer le montant de 72 à 52 £ alors
+qu'aucune facture n'a changé (annexe D). La FCI reste à 72 £ : la validation **reclasse** le
+montant des ventes de produits vers la facturation non-produit, sans le faire disparaître.
+
+**Limites de la FCI (affichées avec l'indicateur)** : ce n'est **ni un montant comptable, ni un
+montant encaissé** ; aucune TVA, aucun avoir comptable, aucun paiement ne figure dans les données ;
+les retours sont datés à l'annulation ; ajustements (R2), annulations incohérentes (R4) et retours
+hors C (R9) en sont exclus par défaut ; sa valeur dépend du marquage des sous-catégories.
+
+### 3.5 Options réversibles et recalcul complet
+
+Tous les indicateurs sont une **fonction pure** `KPI = f(données, jeu de règles, filtres)`.
+Changer une option relance **le calcul complet** (catégories, ventes, unités, commandes, panier,
+clients, facturation, séries temporelles, produits, réconciliations) : aucun KPI n'est mis à jour
+isolément. Le tableau avant/après (§6.3) affiche **tous** les KPI principaux.
+
+| Option | Défaut | Alternative | Effet exact de l'alternative |
+|---|---|---|---|
+| **O1** Doublons | Exclus (R0) | Inclus | Les lignes R0 sont reclassées par R1…R10 comme des lignes ordinaires |
+| **O2** Ajustements | Hors CA | Dans le CA net | `CAN += S_R2` ; VB, R, C, UP, clients inchangés |
+| **O3** C incohérentes | Exclues | Retours à signe corrigé | `RS −= Σ |m|(R4)` ⇒ R, CAN, TR, FCI changent |
+| **O4** Retours hors C | Exclus | Retours | `RS += S_R9` (≤ 0) ⇒ R, CAN, TR, FCI changent |
+| **O5** Codes atypiques | Non validés (restent produits) | Catégorie validée | Lignes reclassées en R3 ⇒ tous les KPI produits et clients changent, FCI inchangée si la sous-catégorie est facturée |
+
+### 3.6 Factures sans vente payante
+
+`Factures sans vente payante = factures distinctes − factures ayant ≥ 1 ligne R10`. Elles
+n'entrent **jamais** dans C ni dans le dénominateur de PM. Elles sont comptées et listées avec
+leur **motif** = catégories de leurs lignes (ex. « uniquement gratuites », « annulation »,
+« ajustement », « valeur manquante »).
+
+### 3.7 Valeurs manquantes (R1)
+
+Une ligne R1 est exclue de **tous** les KPI : montants, unités (même si `Quantity` est
+renseignée), commandes, séries temporelles, clients, produits. Elle apparaît dans la
+réconciliation d'intégrité (nombre de lignes, montant « non calculable ») et dans la liste des
+lignes, et elle ne compte pas dans `M_brut`. Une facture ne contenant que des lignes R1 est une
+facture sans vente payante (motif « valeur manquante »). `Customer ID` manquant n'est **pas** R1
+(marqueur F3).
+
+### 3.8 Retours hors facture C (R9)
+
+`Quantity < 0`, `Price > 0`, facture sans préfixe C : retour non documenté par une facture
+d'annulation, ou erreur de signe. Par défaut exclu (listé « à examiner », montant affiché) ; avec
+l'option O4, il est ajouté aux retours. Il n'affecte jamais VB, C ni UP.
 
 ## 4. Validation des règles métier
 
@@ -176,6 +238,10 @@ ligne est un **jour sans données** ; il ne rend pas la période incomplète. L'
 Comparaisons : mois vs mois précédent et vs même mois N-1, **uniquement entre périodes
 complètes** ; sinon « comparaison impossible (période partielle) ».
 
+Cas limite : une période **complète sans aucune ligne** (ex. un mois entier vide à l'intérieur de
+la fenêtre) affiche ses KPI à 0 avec l'avertissement « aucune donnée : fermeture ou données
+manquantes ? » et apparaît dans la liste des trous ; elle n'est jamais qualifiée de partielle.
+
 ### 5.3 Décomposition d'une variation (descriptive)
 
 `CA = C × PM` ⇒ `ΔCA = ΔC × PM₀ + C₀ × ΔPM + ΔC × ΔPM` (somme exacte affichée), puis
@@ -212,21 +278,27 @@ Aucune notion de CA ici : c'est un contrôle de partition.
 
 ### 6.2 Réconciliation financière (pont M_brut → CA produits net)
 
-But : expliquer le passage du montant brut au CA. Chaque étape retire le montant signé d'une
-catégorie exclue, avec son explication :
+But : expliquer le passage du montant brut au CA **pour la configuration active**. Le pont
+retire le montant signé de chaque catégorie hors CA, puis **réintègre** ce que les options
+actives font entrer dans le CA net, avec le signe défini par l'option :
 
 ```
 M_brut
- − S_R0  doublons exacts
- − S_R2  ajustements comptables (A, prix < 0)
- − S_R3  lignes non-produit validées (dont remises RM, frais de port FP, …)
- − S_R4  annulations incohérentes (option 1)
- − S_R6 − S_R7 − S_R8   (montants nuls, affichés pour mémoire)
- − S_R9  retours hors facture C
- = CAN = S_R10 + S_R5
+ − S_R0  doublons exacts                    (0 si O1 = inclus : lignes déjà reclassées)
+ − S_R2  ajustements comptables
+ − S_R3  lignes non-produit validées (détail par sous-catégorie)
+ − S_R4  annulations incohérentes (montant saisi)
+ − S_R6 − S_R7 − S_R8                        (montants nuls, affichés pour mémoire)
+ − S_R9  retours hors facture C (montant saisi)
+ + S_R2          si O2 = ajustements dans le CA net
+ − Σ |m|(R4)     si O3 = retours à signe corrigé
+ + S_R9          si O4 = retours
+ = CAN
 ```
 
-Contrôle ✓/✗ : le résultat du pont égale `S_R10 + S_R5` calculé directement.
+Contrôle ✓/✗ : le résultat du pont égale le CAN calculé directement (`VB + RS`, plus `S_R2` si
+O2). *(v3 : la v2 ne présentait que le pont des options par défaut ; il ne retombait pas sur le CAN
+quand O2, O3 ou O4 étaient activées — annexe D.)*
 
 ### 6.3 Avant / après par règle
 
@@ -242,8 +314,8 @@ avec le réglage courant et avec ce seul réglage inversé, et l'écart. Clic �
   Chaque calcul est journalisé (`kind = "kpi"`) avec filtres et version des règles.
 - **Interface « Explorer »** : onglets Règles · Vue d'ensemble · Réconciliations · Évolution ·
   Produits · Clients & pays ; bandeau si des codes ne sont pas validés.
-- **Vérification** :
-  1. la fixture de l'annexe A est un test automatique (valeurs exactes) ;
+- **Vérification** (tests détaillés en annexe B) :
+  1. la fixture de l'annexe A est un test automatique (valeurs exactes, tous scénarios) ;
   2. les invariants §6.1 et §6.2 sont testés sur fixtures, échantillons synthétiques et fichier
      réel ;
   3. le script indépendant `scripts/verify_kpi.py` recalcule CA net mensuel, commandes et retours
@@ -291,6 +363,102 @@ compte malgré sa ligne gratuite) · PM = 20,00 · UP = 7 · UG = 5 · CA net ap
 Montant facturé = 72,00 · Clients actifs = 2 · Part du CA sans client = 37,5 % · Bandeau
 « dont 20,00 £ issus de 1 code non validé ».
 
-**Avant / après** : C incohérente traitée comme retour → CAN 50,00 (inclure tel quel donnerait
-90,00 : refusé) · doublons inclus → VB 100,00, CAN 90,00 · ajustements inclus → 20,00 ·
-`GIFTX1` validé comme Bon cadeau → VB 60,00, CAN 50,00, commandes 3.
+**Scénarios avant / après — tous les KPI** (recalculés par `verif_annexe_a.py`) :
+
+| KPI | S0 défaut | S1 doublons inclus | S2 ajust. dans CA | S3 C incoh. = retours | S4 hors C = retours | S5 GIFTX1 = bon cadeau |
+|---|---|---|---|---|---|---|
+| Ventes brutes VB | 80 | 100 | 80 | 80 | 80 | 60 |
+| Retours R | 10 | 10 | 10 | 30 | 30 | 10 |
+| **CA produits net** | **70** | **90** | **20** | **50** | **50** | **50** |
+| Taux de retour | 12,5 % | 10,0 % | 12,5 % | 37,5 % | 37,5 % | 16,7 % |
+| Commandes C | 4 | 4 | 4 | 4 | 4 | 3 |
+| Panier moyen | 20,00 | 25,00 | 20,00 | 20,00 | 20,00 | 20,00 |
+| Unités payantes | 7 | 9 | 7 | 7 | 7 | 6 |
+| Unités gratuites | 5 | 5 | 5 | 5 | 5 | 5 |
+| Prix moyen unitaire | 11,43 | 11,11 | 11,43 | 11,43 | 11,43 | 10,00 |
+| Factures sans vente payante | 9 | 9 | 9 | 9 | 9 | 10 |
+| Clients actifs | 2 | 2 | 2 | 2 | 2 | 2 |
+| VB clients identifiés | 50 | 70 | 50 | 50 | 50 | 30 |
+| Part du CA sans client | 37,5 % | 30,0 % | 37,5 % | 37,5 % | 37,5 % | 50,0 % |
+| CA net après remises | 67 | 87 | 67 | 47 | 47 | 47 |
+| **Facturation client indicative** | **72** | **92** | **72** | **52** | **52** | **72** |
+| Codes non validés (£ / lignes) | 20 / 1 | 20 / 1 | 20 / 1 | 20 / 1 | 20 / 1 | 0 / 0 |
+| Pont actif = CAN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+Note S2 : la FCI n'inclut pas les ajustements, même lorsque O2 les ajoute au CA net (limite
+documentée §3.4). Inclure les C incohérentes telles quelles donnerait CAN = 90 : option refusée.
+
+**Effet de la validation de `GIFTX1` comme « Bon cadeau » (S0 → S5)**
+
+| Famille | Indicateur | Avant | Après | Explication |
+|---|---|---|---|---|
+| Ventes de produits | VB / CAN | 80 / 70 | 60 / 50 | La ligne 16 (20 £) quitte R10 pour R3 |
+| | Unités payantes | 7 | 6 | Sa quantité (1) n'est plus une unité de produit |
+| | Commandes | 4 | 3 | La facture 1013 n'a plus de ligne R10 |
+| | Panier moyen | 20,00 | 20,00 | 80/4 → 60/3 (égalité fortuite) |
+| | Prix moyen unitaire | 11,43 | 10,00 | 80/7 → 60/6 |
+| | Taux de retour | 12,5 % | 16,7 % | Retours inchangés, VB plus faible |
+| | Factures sans vente payante | 9 | 10 | 1013 rejoint la liste (motif « non-produit ») |
+| Clients | Clients actifs | 2 | 2 | 17003 reste actif grâce à la ligne 14 |
+| | VB identifié / part sans client | 50 / 37,5 % | 30 / 50,0 % | La part des ventes anonymes augmente mécaniquement |
+| Facturation | Bons cadeaux BC | 0 | 20 | Montant reclassé, pas supprimé |
+| | **FCI** | **72** | **72** | Inchangée : aucune facture n'a changé |
+| | « Montant facturé » formule v2 | 72 | **52** | **Incohérence corrigée en v3** |
+| Transparence | Bandeau codes non validés | 20 £ / 1 | aucun | Validation tracée (version vN) |
+
+## Annexe B — Tests qui confirmeront l'exactitude
+
+À écrire **avant** le code de calcul (ils doivent échouer, puis passer) :
+
+| Test | Vérifie |
+|---|---|
+| `test_annexe_a_categories` | Catégorie attendue pour chacune des 16 lignes |
+| `test_annexe_a_integrity` | Σ N_k = 16 ; Σ S_k = M_brut = 42 ; R1 non calculable |
+| `test_annexe_a_scenarios[S0…S5]` | **Vecteur complet** des KPI de la table de l'annexe A pour chaque scénario |
+| `test_bridge_equals_net_for_every_option` | Pont actif = CAN pour S0…S5 et pour toutes les combinaisons O1–O4 (16) |
+| `test_validation_reclassifies_without_changing_billing` | S0 → S5 : FCI = 72 constante ; VB, C, UP, clients changent comme indiqué |
+| `test_no_double_subtraction` | `CAN = VB + RS = VB − R = Σ m(R10 ∪ R5)` (fixture + 1 000 lignes aléatoires) |
+| `test_partition_exhaustive_random` | Toute combinaison préfixe × signe Q × signe P × manquants tombe dans exactement une catégorie |
+| `test_free_lines_do_not_block_orders` | 1001 est une commande malgré sa ligne gratuite ; 1003 n'en est pas une |
+| `test_missing_values_excluded_everywhere` | Une ligne R1 n'apparaît dans aucun KPI ni série, mais dans l'intégrité |
+| `test_invoices_without_paid_sale` | 9 factures en S0 avec leurs motifs ; 10 en S5 |
+| `test_r9_option` | O4 change R, CAN, TR, FCI ; jamais VB, C, UP |
+| `test_coverage_empty_days_not_incomplete` | Fixture annexe C : statuts, couvertures, jours vides, trous |
+| `test_coverage_iso_weeks` | 2024-W01 complète, 2024-W06 complète malgré 2 jours vides, 2024-W11 partielle 5/7 |
+| `test_empty_month_inside_window` | Mois sans ligne = complet, 29 jours vides, signalé comme trou |
+| `test_oracle_agreement` | Sur l'échantillon synthétique retail (18 337 lignes) : l'application et `verif_annexe_a.py` (adapté) donnent les mêmes KPI |
+| Non-régression | Les 56 tests backend et 8 tests frontend existants restent verts (CI Linux + Windows) |
+
+## Annexe C — Fixture de couverture temporelle
+
+Lignes chaque jour du 01/01/2024 au 15/03/2024, **sauf** : tous les samedis ; du 15 au 17/01
+(3 jours) ; du 10 au 20/02 (11 jours). Fenêtre = 01/01/2024 → 15/03/2024. Résultats recalculés :
+
+| Période | Statut | Couverture | Jours sans données | Trou ≥ 7 jours |
+|---|---|---|---|---|
+| Janvier 2024 | **Complète** | 31/31 | 7 (4 samedis + 15–17/01) | Non (3 jours < 7) |
+| Février 2024 | **Complète** | 29/29 | 13 (2 samedis isolés + 10–20/02) | **Oui : 10/02 → 20/02, 11 jours** |
+| Mars 2024 | **Partielle (bord)** | 15/31 | 2 (samedis 2 et 9) | Non |
+| Semaine 2024-W01 | Complète | 7/7 | — | — |
+| Semaine 2024-W11 | Partielle | 5/7 | — | — |
+
+Jours vides par jour de semaine : samedi 10/10 (fermeture structurelle) ; lundi 3/11, mardi 3/11,
+mercredi 2/11, jeudi 1/11, vendredi 1/11, dimanche 2/10.
+
+Second cas : données du 02/01 au 30/01 puis du 01/03 au 19/03/2024, rien en février → février
+**complète** avec 29 jours sans données, trou du 31/01 au 29/02 (30 jours).
+
+## Annexe D — Résultat du recalcul indépendant de la v2
+
+`verif_annexe_a.py` : **24/24 valeurs écrites dans la v2 concordent** avec le recalcul. Le
+recalcul de **tous** les KPI de chaque scénario a révélé deux incohérences de la v2, corrigées en
+v3 :
+
+1. « Montant facturé = CAN + RM + FP » variait (72 → 52 £) lors de la validation d'un code
+   atypique alors qu'aucune facture ne change → remplacé par la FCI (§3.4).
+2. Le pont §6.2 ne retombait sur le CAN qu'avec les options par défaut (ex. S2 : pont 70, CAN 20)
+   → pont calculé pour la configuration active.
+
+Autres précisions v3 : R1 étendu à `Invoice` et `InvoiceDate` ; R7 non réversible (définition) ;
+« Total enregistré » supprimé ; options O1–O5 formalisées ; factures sans vente payante, valeurs
+manquantes et retours hors C détaillés (§3.6–3.8) ; mois vide à l'intérieur de la fenêtre.
