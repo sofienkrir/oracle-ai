@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import type { DragEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, ApiError } from '../api/client'
+import type { SheetMode } from '../api/client'
 import { Icon } from '../components/Icon'
 import { Card, PageHeader } from '../components/ui'
 import { DOMAIN_LABELS } from '../lib/labels'
@@ -17,6 +18,7 @@ export function ImportPage() {
   const [dragging, setDragging] = useState(false)
   const [busy, setBusy] = useState<string>()
   const [error, setError] = useState<ApiError | Error>()
+  const [sheets, setSheets] = useState<SheetMode>('first')
 
   const loaded = datasets.filter((d) => d.loaded)
 
@@ -24,7 +26,7 @@ export function ImportPage() {
     setError(undefined)
     setBusy(file.name)
     try {
-      const ds = await api.upload(file)
+      const ds = await api.upload(file, sheets)
       select(ds.id)
       await refresh()
       navigate(`/datasets/${ds.id}`)
@@ -83,7 +85,7 @@ export function ImportPage() {
               </button>
             </span>
             <span className="muted small">
-              Formats : .csv, .xlsx (1re feuille) · max {health?.limits.max_upload_mb ?? '—'} Mo ·{' '}
+              Formats : .csv, .xlsx (feuilles : voir l'option ci-dessous) · max {health?.limits.max_upload_mb ?? '—'} Mo ·{' '}
               {formatInt(health?.limits.max_rows)} lignes · {health?.limits.max_columns ?? '—'}{' '}
               colonnes · macros refusées
             </span>
@@ -101,6 +103,39 @@ export function ImportPage() {
           }}
         />
       </div>
+
+      <fieldset className="sheet-mode" disabled={!!busy}>
+        <legend>Classeurs Excel (.xlsx) avec plusieurs feuilles</legend>
+        <label>
+          <input
+            type="radio"
+            name="sheets"
+            value="first"
+            checked={sheets === 'first'}
+            onChange={() => setSheets('first')}
+          />
+          <span>
+            <strong>Première feuille seulement</strong>
+            <span className="muted small">Comportement par défaut.</span>
+          </span>
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="sheets"
+            value="all"
+            checked={sheets === 'all'}
+            onChange={() => setSheets('all')}
+          />
+          <span>
+            <strong>Toutes les feuilles, empilées</strong>
+            <span className="muted small">
+              Ex. une feuille par année. Les feuilles doivent avoir exactement les mêmes colonnes ;
+              les lignes identiques d'une feuille à l'autre sont signalées, pas supprimées.
+            </span>
+          </span>
+        </label>
+      </fieldset>
 
       {error && (
         <div className="alert alert-error" role="alert">

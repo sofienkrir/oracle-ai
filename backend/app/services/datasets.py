@@ -13,9 +13,10 @@ import pandas as pd
 from app.core.config import Settings
 from app.core.exceptions import DatasetExpiredError, DatasetNotFoundError
 from app.core.logging import get_logger
-from app.data.ingestion import ingest_bytes
-from app.data.profiling import ProfileParams, profile_dataframe
+from app.data.ingestion import SheetMode, ingest_bytes
+from app.data.profiling import ProfileParams, apply_roles, profile_dataframe
 from app.data.roles import default_roles, validate_roles
+from app.data.schemas import QualityIssue
 from app.persistence.models import DatasetRecord
 from app.persistence.repositories import HistoryRepository
 from app.services.samples import sample_path
@@ -36,18 +37,27 @@ class DatasetService:
 
     # ------------------------------------------------------------------ import
 
-    def import_upload(self, content: bytes, filename: str) -> DatasetRecord:
-        return self._import(content, filename, source_kind="upload")
+    def import_upload(
+        self, content: bytes, filename: str, sheets: SheetMode = "first"
+    ) -> DatasetRecord:
+        return self._import(content, filename, source_kind="upload", sheets=sheets)
 
     def import_sample(self, sample_id: str) -> DatasetRecord:
         info, path = sample_path(self.settings.samples_dir, sample_id)
         return self._import(path.read_bytes(), info.file, source_kind="sample")
 
-    def _import(self, content: bytes, filename: str, source_kind: str) -> DatasetRecord:
+    def _import(
+        self, content: bytes, filename: str, source_kind: str, sheets: SheetMode = "first"
+    ) -> DatasetRecord:
         t0 = time.perf_counter()
-        ingested = ingest_bytes(content, filename, self.settings)
+        ingested = ingest_bytes(content, filename, self.settings, sheets=sheets)
         params = self._profile_params()
         report = profile_dataframe(ingested.df, params)
+        if ingested.findings:
+            report = report.model_copy(
+                update={"issues": report.issues + [QualityIssue(**f) for f in ingested.findings]}
+            )
+            report = apply_roles(report, report.roles_applied)  # re-tri des constats
         elapsed = time.perf_counter() - t0
 
         dataset_id = secrets.token_hex(8)
@@ -135,16 +145,23 @@ class DatasetService:
 
     def update_roles(self, dataset_id: str, roles: dict[str, str]) -> dict[str, str]:
         entry = self.get_entry(dataset_id)
-        merged = validate_roles(entry.report, roles)
         rec = self.get_record(dataset_id)
+        merged = validate_roles(entry.report, roles, current=rec.roles)
         changed = {k: v for k, v in merged.items() if rec.roles.get(k) != v}
         self.repo.update_roles(dataset_id, dict(merged))
+        # Les constats dépendant du rôle (types incohérents) et le score sont recalculés.
+        before = entry.report.score
+        entry.report = apply_roles(entry.report, merged)
         if changed:
             self.repo.add_analysis(
                 dataset_id,
                 kind="roles_update",
                 params={"changed": changed},
-                summary={"n_changed": len(changed)},
+                summary={
+                    "n_changed": len(changed),
+                    "score_before": before,
+                    "score_after": entry.report.score,
+                },
             )
         return dict(merged)
 

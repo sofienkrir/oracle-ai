@@ -1,6 +1,6 @@
 # Architecture — ORACLE AI
 
-> État : **v0.2.0 — étapes 1 et 2 livrées** (squelette, import, qualité, historique).
+> État : **v0.2.1 — étapes 1 et 2 livrées** (+ import multi-feuilles, constats selon le rôle) (squelette, import, qualité, historique).
 > Les modules des étapes 3 à 8 sont listés mais **non implémentés**.
 
 ## 1. Vue d'ensemble
@@ -31,12 +31,17 @@ calculs. Le reste de l'arborescence §8 est conservé sous `backend/app/`.
    refusés), signature ZIP, taille, présence de macros (`vbaProject.bin`), nombre de lignes et
    de colonnes. Anti « zip bomb » : refus de toute grosse entrée compressée plus de 100×, et
    limite de taille décompressée appliquée à ce qui est réellement lu (1re feuille + parties
-   communes, les autres feuilles sont ignorées). Mémoire observée : ≈ 770 Mo pour 525 k lignes.
+   communes ; en mode « toutes les feuilles », toutes comptent). Mémoire observée : ≈ 770 Mo pour
+   525 k lignes, ≈ 1,3 Go pour 1,05 M lignes.
 2. **Lecture** :
    - CSV : encodage (`utf-8-sig` → `cp1252` → `latin-1`), séparateur (`, ; tab |`), lecture
      **en texte brut** puis conversion numérique **seulement si sans perte** (pas de zéros de
      tête) ; chaque conversion est tracée dans `transformations`.
-   - XLSX : première feuille, moteur `calamine` (repli `openpyxl`), aucune formule évaluée.
+   - XLSX : moteur `calamine` (repli `openpyxl`), aucune formule évaluée. Deux modes :
+     « première feuille » (défaut) ou « toutes les feuilles » (`sheets=all`) qui empile les
+     feuilles non vides **à colonnes identiques** (sinon refus explicite), compte les lignes par
+     feuille et signale les lignes dupliquées d'une feuille à l'autre (`cross_sheet_duplicates`)
+     sans les supprimer.
    - Refus explicite des CSV dont les lignes ont plus de champs que l'en-tête (pandas
      décalerait silencieusement les colonnes).
 3. **Profilage** (`data/profiling.py`, fonctions pures) : types sémantiques, manquants,
@@ -44,7 +49,10 @@ calculs. Le reste de l'arborescence §8 est conservé sous `backend/app/`.
    (jour/mois), forte cardinalité, valeurs infinies ; contrôles métier Retail / Maintenance
    (`data/domains.py`), dont la **fuite de cible** AI4I et le **déséquilibre de classes**.
 4. **Rôles** (`data/roles.py`) : proposés, puis confirmés/corrigés par l'utilisateur ; un rôle
-   incompatible avec le contenu est refusé avec une raison par colonne ; une seule cible.
+   incompatible avec le contenu est refusé avec une raison par colonne ; une seule cible. Chaque
+   modification s'applique par-dessus les rôles déjà confirmés. Les constats qui dépendent du
+   rôle (mélange chiffres/lettres : `mixed_types` si le rôle exige des nombres, `mixed_codes`
+   sinon) et le score sont recalculés par `apply_roles()` sans relire les données.
 5. **Export** (`reporting/quality_export.py`) : JSON complet ou CSV `;` (BOM UTF-8), cellules
    neutralisées contre l'injection de formules.
 6. **Historique** (`persistence/`) : SQLite via SQLAlchemy 2 — tables `datasets` et
@@ -67,7 +75,7 @@ calculs. Le reste de l'arborescence §8 est conservé sous `backend/app/`.
 |---|---|---|
 | GET | `/api/health` | État, limites, **statut réel de chaque module** |
 | GET | `/api/samples` | Catalogue des échantillons synthétiques |
-| POST | `/api/datasets/upload` | Import multipart (CSV/XLSX) → rapport qualité |
+| POST | `/api/datasets/upload` | Import multipart (CSV/XLSX, champ `sheets=first\|all`) → rapport qualité |
 | POST | `/api/datasets/samples/{id}` | Charger un échantillon |
 | GET | `/api/datasets` | Datasets connus (`loaded` = copie en mémoire) |
 | GET | `/api/datasets/{id}` | Détail + rapport qualité (410 si copie expirée) |

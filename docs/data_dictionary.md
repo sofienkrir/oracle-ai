@@ -51,7 +51,9 @@ Reconnu si au moins 5 de ces noms sont présents.
 | `high_missing` | Attention | ≥ 30 % de manquants |
 | `missing_values` | Info | Quelques manquants |
 | `constant_column` | Attention | Une seule valeur distincte |
-| `mixed_types` | Attention | Mélange de valeurs numériques et textuelles (≥ 5 % numériques) |
+| `mixed_types` | Attention | Valeurs non numériques dans une colonne dont le **rôle exige des nombres** (Numérique, Mesure, Cible) ; elles seront ignorées dans les calculs. Pénalise la cohérence |
+| `mixed_codes` | Info | Mélange chiffres / lettres dans une colonne de **code ou libellé** (Identifiant, Catégorie, Texte…), ex. `85123A` : normal, non pénalisé |
+| `cross_sheet_duplicates` | Attention | Mode « toutes les feuilles » : lignes identiques à une ligne d'une feuille précédente (chevauchement de période probable) |
 | `invalid_dates` | Attention | Valeurs non conformes au format de date détecté |
 | `ambiguous_dates` | Attention | Jour/mois et mois/jour tous deux plausibles |
 | `high_cardinality` | Info | ≥ 50 modalités et ≥ 50 % de valeurs distinctes |
@@ -61,6 +63,10 @@ Reconnu si au moins 5 de ces noms sont présents.
 | `retail_negative_quantity` | Attention | Quantités négatives |
 | `retail_non_positive_price` | Attention | Prix ≤ 0 |
 | `retail_cancellations` | Info | Factures d'annulation |
+| `retail_other_invoice_prefix` | Info | Factures commençant par une autre lettre que C (ex. A = ajustement comptable probable) |
 | `retail_missing_customer` | Info | Lignes sans client |
 | `target_leakage` | Attention | Colonnes dérivées du label |
 | `class_imbalance` | Attention / Info | Part de la classe positive (attention si < 10 %) |
+
+Les constats `mixed_types` / `mixed_codes` et le score sont **recalculés à chaque confirmation de
+rôles** : passer une colonne de « Catégorie » à « Mesure métier » transforme l'info en alerte.

@@ -26,4 +26,20 @@ describe('client API', () => {
     const err = (await api.samples().catch((e: unknown) => e)) as ApiError
     expect(err.code).toBe('network')
   })
+
+  it("envoie le mode de lecture des feuilles Excel avec le fichier", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({ id: 'x' }), { status: 201 })),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    await api.upload(new File(['a'], 'f.xlsx'), 'all')
+    const body = fetchMock.mock.calls[0][1].body as FormData
+    expect(body.get('sheets')).toBe('all')
+    expect((body.get('file') as File).name).toBe('f.xlsx')
+
+    await api.upload(new File(['a'], 'f.csv'))
+    expect((fetchMock.mock.calls[1][1].body as FormData).get('sheets')).toBe('first')
+  })
 })

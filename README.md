@@ -11,7 +11,7 @@ recommandations traçables. Chaque résultat expose sa méthode, ses hypothèses
 | Étape | Contenu | Statut |
 |---|---|---|
 | 1 | Squelette FastAPI + React/Vite, configuration typée, SQLite, tests, CI | ✅ Livré |
-| 2 | Import CSV/XLSX sécurisé, profilage qualité, rôles de colonnes, export, historique | ✅ Livré |
+| 2 | Import CSV/XLSX sécurisé (multi-feuilles), profilage qualité, rôles de colonnes, export, historique | ✅ Livré (v0.2.1) |
 | 3 | KPI & exploration | ⏳ À venir |
 | 4 | Anomalies : médiane/MAD, IQR, Isolation Forest | ⏳ À venir |
 | 5 | Prévision : split chronologique, baselines, MAE/RMSE/MASE | ⏳ À venir |
@@ -98,7 +98,8 @@ le LLM, prévu plus tard, sera optionnel et désactivé sans clé.
 
 ## Limites connues (v0.2.0)
 
-- Seule la première feuille d'un classeur Excel est importée ; formules non évaluées.
+- Classeurs Excel : première feuille par défaut, ou toutes les feuilles si elles ont exactement
+  les mêmes colonnes ; formules non évaluées.
 - Les dates texte sont détectées parmi une liste de formats courants ; en cas d'ambiguïté
   jour/mois, l'outil le signale et retient jour/mois par défaut.
 - Les copies de travail sont perdues au redémarrage du backend (réimport nécessaire).

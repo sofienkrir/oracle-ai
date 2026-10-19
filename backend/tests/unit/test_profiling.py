@@ -7,7 +7,7 @@ import pytest
 
 from app.core.config import Settings
 from app.data.ingestion import ingest_bytes
-from app.data.profiling import infer_datetime, profile_dataframe
+from app.data.profiling import apply_roles, infer_datetime, profile_dataframe
 
 
 @pytest.fixture
@@ -49,12 +49,40 @@ def test_structural_issues(report):
     assert _col(report, "empty_col").suggested_role == "ignore"
 
 
-def test_mixed_types_counted(report):
-    (issue,) = _issue(report, "mixed_types", "mixed")
-    assert issue.count == 1
-    assert "X9" in issue.message
-    # colonne à zéros de tête : 100 % numérique en texte, pas incohérente
+def test_mixed_values_depend_on_role(report):
+    # Rôle proposé « Catégorie » : mélange chiffres/lettres = code normal, info sans pénalité.
+    assert _col(report, "mixed").suggested_role == "categorical"
+    (info,) = _issue(report, "mixed_codes", "mixed")
+    assert info.severity == "info" and info.count == 1 and "X9" in info.message
+    assert not _issue(report, "mixed_types", "mixed")
+    assert report.score_breakdown["consistency"] == pytest.approx(88.8)  # 8/9 (dates)
+
+    # Même colonne en « Mesure métier » : valeur texte = anomalie, pénalise la cohérence.
+    as_measure = apply_roles(report, {**report.roles_applied, "mixed": "measure"})
+    (warn,) = _issue(as_measure, "mixed_types", "mixed")
+    assert warn.severity == "warning" and warn.count == 1 and "ignorées" in warn.message
+    assert not _issue(as_measure, "mixed_codes", "mixed")
+    assert as_measure.score_breakdown["consistency"] == pytest.approx(77.7)  # 7/9
+    assert as_measure.score < report.score
+    assert as_measure.roles_applied["mixed"] == "measure"
+
+    # Retour au rôle catégorie : idempotent, aucun constat dupliqué.
+    back = apply_roles(as_measure, report.roles_applied)
+    assert [i.code for i in back.issues] == [i.code for i in report.issues]
+    assert back.score == report.score
+
+    # colonne à zéros de tête : 100 % numérique en texte, aucun constat de mélange
     assert not _issue(report, "mixed_types", "zip_code")
+    assert not _issue(report, "mixed_codes", "zip_code")
+
+
+def test_stockcode_like_codes_not_penalised():
+    codes = [str(20000 + i) for i in range(85)] + [f"{85000 + i}A" for i in range(15)]
+    df = pd.DataFrame({"StockCode": codes, "Quantity": range(100)})
+    report = profile_dataframe(df)
+    assert not [i for i in report.issues if i.code == "mixed_types"]
+    assert [i.count for i in report.issues if i.code == "mixed_codes"] == [15]
+    assert report.score_breakdown["consistency"] == 100
 
 
 def test_text_dates_detected_and_invalid_counted(report):

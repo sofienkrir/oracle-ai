@@ -64,6 +64,18 @@ def test_full_upload_flow_and_persistence(settings: Settings, known_csv: bytes):
     bad = client.put(f"/api/datasets/{ds_id}/roles", json={"roles": {"notes": "measure"}})
     assert bad.status_code == 422 and "notes" in bad.json()["details"]["errors"]
 
+    # Le rôle change les constats : « mixed » (95 % numérique) passe de code à mesure.
+    before = client.get(f"/api/datasets/{ds_id}").json()["quality"]
+    assert {"mixed_codes"} <= {i["code"] for i in before["issues"] if i["column"] == "mixed"}
+    ok2 = client.put(f"/api/datasets/{ds_id}/roles", json={"roles": {"mixed": "measure"}})
+    assert ok2.status_code == 200
+    after = client.get(f"/api/datasets/{ds_id}").json()["quality"]
+    codes = {i["code"] for i in after["issues"] if i["column"] == "mixed"}
+    assert "mixed_types" in codes and "mixed_codes" not in codes
+    assert after["score"] < before["score"]
+    assert after["roles_applied"]["mixed"] == "measure"
+    client.put(f"/api/datasets/{ds_id}/roles", json={"roles": {"mixed": "categorical"}})
+
     j = client.get(f"/api/datasets/{ds_id}/quality/export", params={"format": "json"})
     assert j.status_code == 200
     payload = json.loads(j.content)
@@ -73,7 +85,9 @@ def test_full_upload_flow_and_persistence(settings: Settings, known_csv: bytes):
     assert "duplicate_rows" in c.content.decode("utf-8-sig")
 
     kinds = [a["kind"] for a in client.get("/api/history").json()]
-    assert kinds == ["roles_update", "quality_profile"]
+    assert kinds == ["roles_update", "roles_update", "roles_update", "quality_profile"]
+    last = client.get("/api/history").json()[1]
+    assert last["summary"]["score_after"] < last["summary"]["score_before"]
 
     assert client.delete(f"/api/datasets/{ds_id}").status_code == 204
     gone = client.get(f"/api/datasets/{ds_id}")
@@ -82,7 +96,7 @@ def test_full_upload_flow_and_persistence(settings: Settings, known_csv: bytes):
     # « Redémarrage » : nouvelle application sur la même base SQLite.
     restarted = TestClient(create_app(settings))
     history = restarted.get("/api/history").json()
-    assert [a["kind"] for a in history] == ["roles_update", "quality_profile"]
+    assert [a["kind"] for a in history][-1] == "quality_profile" and len(history) == 4
     listed = restarted.get("/api/datasets").json()
     assert listed[0]["id"] == ds_id and listed[0]["loaded"] is False
     assert listed[0]["released_at"] is not None
@@ -101,3 +115,33 @@ def test_upload_errors_are_readable(client: TestClient, settings: Settings):
     r = small.post("/api/datasets/upload", files={"file": ("x.csv", b"a\n" + b"1\n" * 2000)})
     assert r.status_code == 413 and r.json()["code"] == "file_too_large"
     assert client.get("/api/datasets/doesnotexist").status_code == 404
+
+
+def test_upload_all_sheets_reports_overlap(client: TestClient):
+    import io
+
+    import pandas as pd
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf) as w:
+        pd.DataFrame({"Invoice": ["1", "2"], "Qty": [1, 2]}).to_excel(
+            w, sheet_name="a", index=False
+        )
+        pd.DataFrame({"Invoice": ["2", "3"], "Qty": [2, 3]}).to_excel(
+            w, sheet_name="b", index=False
+        )
+    files = {"file": ("multi.xlsx", buf.getvalue())}
+
+    first = client.post("/api/datasets/upload", files=files)
+    assert first.status_code == 201 and first.json()["n_rows"] == 2
+
+    both = client.post("/api/datasets/upload", files=files, data={"sheets": "all"})
+    assert both.status_code == 201, both.text
+    body = both.json()
+    assert body["n_rows"] == 4 and body["parse_info"]["sheet_mode"] == "all"
+    codes = {i["code"]: i for i in body["quality"]["issues"]}
+    assert codes["cross_sheet_duplicates"]["count"] == 1
+    assert codes["duplicate_rows"]["count"] == 1
+
+    bad = client.post("/api/datasets/upload", files=files, data={"sheets": "every"})
+    assert bad.status_code == 422

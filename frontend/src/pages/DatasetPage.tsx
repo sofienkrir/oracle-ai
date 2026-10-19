@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, ApiError } from '../api/client'
-import type { ColumnRole, DatasetDetail } from '../api/types'
+import type { DatasetDetail } from '../api/types'
 import { Icon } from '../components/Icon'
 import {
   ColumnsRoles,
@@ -21,15 +21,13 @@ export function DatasetPage() {
   const { id = '' } = useParams()
   const { select, refresh } = useWorkspace()
   const res = useAsync(() => api.dataset(id), [id])
-  const [savedRoles, setSavedRoles] = useState<{ id: string; roles: Record<string, ColumnRole> }>()
   const loadedId = res.data?.id
 
   useEffect(() => {
     if (loadedId) select(loadedId)
   }, [loadedId, select])
 
-  const dataset: DatasetDetail | undefined =
-    res.data && savedRoles?.id === res.data.id ? { ...res.data, roles: savedRoles.roles } : res.data
+  const dataset: DatasetDetail | undefined = res.data
 
   if (res.error) {
     const expired = res.error instanceof ApiError && res.error.code === 'dataset_expired'
@@ -52,8 +50,9 @@ export function DatasetPage() {
   const q = dataset.quality
   const nWarnings = q.issues.filter((i) => i.severity !== 'info').length
 
-  function onRolesSaved(roles: Record<string, ColumnRole>) {
-    setSavedRoles({ id: dataset!.id, roles })
+  function onRolesSaved() {
+    // Constats dépendant du rôle et score recalculés côté serveur : on recharge le rapport.
+    res.reload()
     void refresh()
   }
 

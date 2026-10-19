@@ -65,6 +65,8 @@ export interface ColumnProfile {
   n_unique: number
   unique_ratio: number
   numeric_parse_share: number | null
+  n_non_numeric: number | null
+  non_numeric_example: string | null
   numeric: NumericStats | null
   datetime: DatetimeStats | null
   top_values: { value: string; count: number }[]
@@ -95,6 +97,7 @@ export interface QualityReport {
   score: number
   score_breakdown: Record<string, number>
   parameters: Record<string, number>
+  roles_applied: Record<string, ColumnRole>
 }
 
 export interface Dataset {

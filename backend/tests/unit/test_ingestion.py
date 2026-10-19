@@ -144,3 +144,62 @@ def test_high_compression_ratio_rejected(settings: Settings):
     with pytest.raises(InvalidFileError) as e:
         ingest_bytes(buf.getvalue(), "f.xlsx", settings)
     assert "compression" in e.value.message
+
+
+def _workbook(sheets: dict[str, pd.DataFrame]) -> bytes:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf) as w:
+        for name, frame in sheets.items():
+            frame.to_excel(w, sheet_name=name, index=False)
+    return buf.getvalue()
+
+
+Y1 = pd.DataFrame({"Invoice": ["1", "2", "3"], "Quantity": [1, 2, 3]})
+Y2 = pd.DataFrame({"Invoice": ["3", "4"], "Quantity": [3, 4]})  # « 3 » chevauche Y1
+
+
+def test_first_sheet_mode_is_default_and_unchanged(settings: Settings):
+    res = ingest_bytes(_workbook({"y1": Y1, "y2": Y2}), "f.xlsx", settings)
+    assert len(res.df) == 3
+    assert res.parse_info["sheet_mode"] == "first" and res.parse_info["sheet"] == "y1"
+    assert res.findings == []
+
+
+def test_all_sheets_stacked_in_order_without_loss(settings: Settings):
+    res = ingest_bytes(_workbook({"y1": Y1, "y2": Y2}), "f.xlsx", settings, sheets="all")
+    assert res.df["Invoice"].astype(str).tolist() == ["1", "2", "3", "3", "4"]
+    assert res.parse_info["sheet_mode"] == "all"
+    assert res.parse_info["sheets_imported"] == ["y1 : 3 lignes", "y2 : 2 lignes"]
+    (dup,) = res.findings
+    assert dup["code"] == "cross_sheet_duplicates" and dup["count"] == 1
+    assert "« y2 » : 1" in dup["message"]
+
+
+def test_all_sheets_requires_identical_columns(settings: Settings):
+    other = Y2.rename(columns={"Quantity": "Qty"})
+    with pytest.raises(InvalidFileError) as e:
+        ingest_bytes(_workbook({"y1": Y1, "y2": other}), "f.xlsx", settings, sheets="all")
+    assert "Qty" in e.value.message and "Quantity" in e.value.message
+
+
+def test_all_sheets_skips_empty_sheet(settings: Settings):
+    content = _workbook({"y1": Y1, "vide": pd.DataFrame(), "y2": Y2})
+    res = ingest_bytes(content, "f.xlsx", settings, sheets="all")
+    assert len(res.df) == 5 and res.parse_info["sheets_skipped"] == ["vide (vide)"]
+
+
+def test_all_sheets_row_limit_is_global(settings: Settings):
+    tiny = settings.model_copy(update={"max_rows": 4})
+    with pytest.raises(FileTooLargeError):
+        ingest_bytes(_workbook({"y1": Y1, "y2": Y2}), "f.xlsx", tiny, sheets="all")
+
+
+def test_all_sheets_count_toward_uncompressed_limit(settings: Settings):
+    content = _two_sheet_xlsx(20_000)
+    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+        sizes = {i.filename: i.file_size for i in zf.infolist()}
+    limit_mb = (sum(sizes.values()) - sizes["xl/worksheets/sheet1.xml"] / 2) / 1_048_576
+    s = settings.model_copy(update={"max_xlsx_uncompressed_mb": limit_mb})
+    assert len(ingest_bytes(content, "f.xlsx", s).df) == 20_000  # 1re feuille : passe
+    with pytest.raises(FileTooLargeError):
+        ingest_bytes(content, "f.xlsx", s, sheets="all")  # toutes : dépasse

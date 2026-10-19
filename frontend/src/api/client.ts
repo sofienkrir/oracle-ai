@@ -8,6 +8,9 @@ import type {
   Sample,
 } from './types'
 
+/** XLSX : première feuille seulement, ou toutes les feuilles empilées. */
+export type SheetMode = 'first' | 'all'
+
 const BASE = '/api'
 
 export class ApiError extends Error {
@@ -64,9 +67,10 @@ export const api = {
     request<DatasetDetail>(`/datasets/samples/${encodeURIComponent(sampleId)}`, {
       method: 'POST',
     }),
-  upload: (file: File) => {
+  upload: (file: File, sheets: SheetMode = 'first') => {
     const form = new FormData()
     form.append('file', file)
+    form.append('sheets', sheets)
     return request<DatasetDetail>('/datasets/upload', { method: 'POST', body: form })
   },
   updateRoles: (id: string, roles: Record<string, ColumnRole>) =>

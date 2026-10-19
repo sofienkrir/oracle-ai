@@ -62,6 +62,11 @@ class ColumnProfile(BaseModel):
     n_unique: int
     unique_ratio: float
     numeric_parse_share: float | None = None
+    n_non_numeric: int | None = Field(
+        default=None,
+        description="Valeurs non numériques dans une colonne majoritairement numérique",
+    )
+    non_numeric_example: str | None = None
     numeric: NumericStats | None = None
     datetime: DatetimeStats | None = None
     top_values: list[TopValue] = []
@@ -92,3 +97,6 @@ class QualityReport(BaseModel):
     score: float = Field(description="Indicateur heuristique 0–100, documenté dans docs/")
     score_breakdown: dict[str, float]
     parameters: dict[str, Any]
+    roles_applied: dict[str, ColumnRole] = Field(
+        default_factory=dict, description="Rôles utilisés pour les constats dépendants du rôle"
+    )

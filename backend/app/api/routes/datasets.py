@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 
@@ -60,6 +60,9 @@ def _detail(dataset_id: str, service: DatasetService) -> DatasetDetailOut:
 @router.post("/datasets/upload", response_model=DatasetDetailOut, status_code=201)
 async def upload(
     file: UploadFile = File(...),
+    sheets: Literal["first", "all"] = Form(
+        "first", description="XLSX : première feuille, ou toutes les feuilles empilées"
+    ),
     service: DatasetService = Depends(get_dataset_service),
     settings: Settings = Depends(get_settings_dep),
 ) -> DatasetDetailOut:
@@ -74,7 +77,7 @@ async def upload(
             )
         chunks.append(chunk)
     content = b"".join(chunks)
-    rec = await run_in_threadpool(service.import_upload, content, file.filename or "")
+    rec = await run_in_threadpool(service.import_upload, content, file.filename or "", sheets)
     return _detail(rec.id, service)
 
 

@@ -16,6 +16,7 @@ import pandas as pd
 
 from app.data.domains import detect_domain, domain_checks, domain_role_hint
 from app.data.schemas import (
+    ROLE_LABELS,
     ColumnProfile,
     ColumnRole,
     DatetimeStats,
@@ -71,12 +72,8 @@ def profile_dataframe(df: pd.DataFrame, params: ProfileParams | None = None) -> 
 
     n_missing = int(df.isna().sum().sum())
     total_cells = max(n_rows * n_cols, 1)
-    score, breakdown = _quality_score(columns, n_missing / total_cells, n_dup / max(n_rows, 1))
 
-    order = {"error": 0, "warning": 1, "info": 2}
-    issues.sort(key=lambda i: (order[i.severity], i.column or ""))
-
-    return QualityReport(
+    report = QualityReport(
         n_rows=n_rows,
         n_columns=n_cols,
         n_cells_missing=n_missing,
@@ -87,8 +84,8 @@ def profile_dataframe(df: pd.DataFrame, params: ProfileParams | None = None) -> 
         domain_reason=domain_reason,
         columns=columns,
         issues=issues,
-        score=score,
-        score_breakdown=breakdown,
+        score=0.0,
+        score_breakdown={},
         parameters={
             "high_cardinality_ratio": p.high_cardinality_ratio,
             "high_cardinality_min_unique": p.high_cardinality_min_unique,
@@ -96,6 +93,78 @@ def profile_dataframe(df: pd.DataFrame, params: ProfileParams | None = None) -> 
             "high_missing_share": p.high_missing_share,
             "datetime_min_share": p.datetime_min_share,
         },
+    )
+    return apply_roles(report, {c.name: c.suggested_role for c in columns})
+
+
+# --------------------------------------------------------------------------- rôles
+
+# Rôles pour lesquels la colonne doit être un nombre : des valeurs texte y sont une anomalie.
+NUMERIC_ROLES = {"numeric", "measure", "target"}
+ROLE_DEPENDENT_CODES = {"mixed_types", "mixed_codes"}
+
+
+def apply_roles(report: QualityReport, roles: dict[str, ColumnRole]) -> QualityReport:
+    """(Re)calcule les constats qui dépendent du rôle métier des colonnes, puis le score.
+
+    Une colonne mêlant chiffres et lettres est :
+    - une anomalie (`mixed_types`, attention, pénalise la cohérence) si son rôle exige des
+      nombres (numérique, mesure, cible) : ces valeurs seront ignorées dans les calculs ;
+    - normale (`mixed_codes`, info, sans pénalité) si c'est un code ou un libellé
+      (identifiant, catégorie, texte…), par exemple « 85123A » pour un code produit.
+    Le DataFrame n'est pas relu : on s'appuie sur les comptages du profil.
+    """
+    columns = [c.model_copy(deep=True) for c in report.columns]
+    issues = [i for i in report.issues if i.code not in ROLE_DEPENDENT_CODES]
+
+    for col in columns:
+        col.issues = [code for code in col.issues if code not in ROLE_DEPENDENT_CODES]
+        if not col.n_non_numeric:
+            continue
+        role = roles.get(col.name, col.suggested_role)
+        share = col.numeric_parse_share or 0.0
+        example = f" (ex. « {col.non_numeric_example} »)" if col.non_numeric_example else ""
+        if role in NUMERIC_ROLES:
+            col.issues.append("mixed_types")
+            issues.append(
+                QualityIssue(
+                    code="mixed_types",
+                    severity="warning",
+                    column=col.name,
+                    count=col.n_non_numeric,
+                    message=f"Types incohérents dans « {col.name} » (rôle {ROLE_LABELS[role]}) : "
+                    f"{col.n_non_numeric} valeurs ne sont pas numériques{example} et seront "
+                    "ignorées dans les calculs.",
+                )
+            )
+        else:
+            col.issues.append("mixed_codes")
+            issues.append(
+                QualityIssue(
+                    code="mixed_codes",
+                    severity="info",
+                    column=col.name,
+                    count=col.n_non_numeric,
+                    message=f"« {col.name} » mélange codes numériques ({share:.1%}) et "
+                    f"alphanumériques ({col.n_non_numeric} valeurs{example}). Normal pour le rôle "
+                    f"{ROLE_LABELS[role]} : non pénalisé.",
+                )
+            )
+
+    order = {"error": 0, "warning": 1, "info": 2}
+    issues.sort(key=lambda i: (order[i.severity], i.column or ""))
+    total_cells = max(report.n_rows * report.n_columns, 1)
+    score, breakdown = _quality_score(
+        columns, report.n_cells_missing / total_cells, report.pct_duplicate_rows
+    )
+    return report.model_copy(
+        update={
+            "columns": columns,
+            "issues": issues,
+            "score": score,
+            "score_breakdown": breakdown,
+            "roles_applied": dict(roles),
+        }
     )
 
 
@@ -116,6 +185,8 @@ def _profile_column(
     numeric_stats = None
     dt_stats = None
     numeric_share: float | None = None
+    n_non_numeric: int | None = None
+    non_numeric_example: str | None = None
     top: list[TopValue] = []
 
     sem = _semantic_type(s, non_null, n_unique)
@@ -169,20 +240,9 @@ def _profile_column(
                     )
                 )
         if p.mixed_type_min_share <= numeric_share < 1.0 and sem != "datetime":
-            n_text = int(num_parsed.isna().sum())
-            example = _first_non_numeric(as_str)
-            codes.append("mixed_types")
-            issues.append(
-                QualityIssue(
-                    code="mixed_types",
-                    severity="warning",
-                    column=name,
-                    count=n_text,
-                    message=f"Types incohérents dans « {name} » : {numeric_share:.1%} des "
-                    f"valeurs sont numériques et {n_text} ne le sont pas"
-                    + (f" (ex. « {example} »)." if example else "."),
-                )
-            )
+            # Constat dépendant du rôle : calculé dans apply_roles(), pas ici.
+            n_non_numeric = int(num_parsed.isna().sum())
+            non_numeric_example = _first_non_numeric(as_str)
 
     # Manquants
     if n_missing == n_rows and n_rows:
@@ -273,6 +333,8 @@ def _profile_column(
         n_unique=n_unique,
         unique_ratio=round(unique_ratio, 6),
         numeric_parse_share=None if numeric_share is None else round(numeric_share, 6),
+        n_non_numeric=n_non_numeric,
+        non_numeric_example=non_numeric_example,
         numeric=numeric_stats,
         datetime=dt_stats,
         top_values=top,

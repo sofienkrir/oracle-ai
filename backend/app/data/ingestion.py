@@ -25,6 +25,7 @@ from app.core.config import Settings
 from app.core.exceptions import FileTooLargeError, InvalidFileError, UnsupportedFileTypeError
 
 FileFormat = Literal["csv", "xlsx"]
+SheetMode = Literal["first", "all"]
 
 _CSV_DELIMITERS = [",", ";", "\t", "|"]
 _ENCODINGS = ["utf-8-sig", "cp1252", "latin-1"]
@@ -40,10 +41,17 @@ class IngestedFile:
     size_bytes: int
     parse_info: dict[str, Any] = field(default_factory=dict)
     transformations: list[dict[str, Any]] = field(default_factory=list)
+    # Constats propres à la lecture (ex. doublons entre feuilles), ajoutés au rapport qualité.
+    findings: list[dict[str, Any]] = field(default_factory=list)
 
 
-def ingest_bytes(content: bytes, filename: str, settings: Settings) -> IngestedFile:
-    """Valide puis lit un fichier téléversé. Lève une `OracleError` explicite en cas d'échec."""
+def ingest_bytes(
+    content: bytes, filename: str, settings: Settings, sheets: SheetMode = "first"
+) -> IngestedFile:
+    """Valide puis lit un fichier téléversé. Lève une `OracleError` explicite en cas d'échec.
+
+    `sheets` (XLSX uniquement) : « first » lit la 1re feuille ; « all » empile toutes les
+    feuilles non vides, qui doivent avoir exactement les mêmes colonnes."""
     size = len(content)
     if size == 0:
         raise InvalidFileError("Le fichier est vide.")
@@ -57,8 +65,9 @@ def ingest_bytes(content: bytes, filename: str, settings: Settings) -> IngestedF
     fmt = detect_format(filename)
     sha = hashlib.sha256(content).hexdigest()
 
+    findings: list[dict[str, Any]] = []
     if fmt == "xlsx":
-        df, info = _read_xlsx(content, settings)
+        df, info, findings = _read_xlsx(content, settings, sheets)
         transformations: list[dict[str, Any]] = []
     else:
         df, info, transformations = _read_csv(content, settings)
@@ -71,6 +80,7 @@ def ingest_bytes(content: bytes, filename: str, settings: Settings) -> IngestedF
         size_bytes=size,
         parse_info=info,
         transformations=transformations,
+        findings=findings,
     )
 
 
@@ -98,7 +108,9 @@ def detect_format(filename: str) -> FileFormat:
 # --------------------------------------------------------------------------- XLSX
 
 
-def _read_xlsx(content: bytes, settings: Settings) -> tuple[pd.DataFrame, dict[str, Any]]:
+def _read_xlsx(
+    content: bytes, settings: Settings, sheets: SheetMode = "first"
+) -> tuple[pd.DataFrame, dict[str, Any], list[dict[str, Any]]]:
     if not content.startswith(_ZIP_MAGIC):
         raise InvalidFileError(
             "Le fichier porte l'extension .xlsx mais n'est pas un classeur Excel valide."
@@ -117,30 +129,112 @@ def _read_xlsx(content: bytes, settings: Settings) -> tuple[pd.DataFrame, dict[s
     except zipfile.BadZipFile as exc:
         raise InvalidFileError("Classeur Excel corrompu ou illisible.") from exc
 
-    _check_zip_entries(infos, first_sheet, settings)
+    # En mode « all », toutes les feuilles sont lues : elles comptent toutes dans la limite.
+    _check_zip_entries(infos, first_sheet if sheets == "first" else None, settings)
 
     engine = _excel_engine()
     try:
-        sheets = pd.ExcelFile(io.BytesIO(content), engine=engine).sheet_names
-        df = pd.read_excel(
+        sheet_names = pd.ExcelFile(io.BytesIO(content), engine=engine).sheet_names
+        raw = pd.read_excel(
             io.BytesIO(content),
-            sheet_name=0,
+            sheet_name=0 if sheets == "first" else None,
             engine=engine,
             nrows=settings.max_rows + 1,
         )
     except Exception as exc:  # erreurs de parsing variées selon le moteur
-        raise InvalidFileError(
-            f"Impossible de lire la première feuille du classeur : {exc}"
-        ) from exc
+        raise InvalidFileError(f"Impossible de lire le classeur : {exc}") from exc
 
-    info = {
-        "engine": engine,
-        "sheet": sheets[0] if sheets else None,
-        "sheets_available": sheets,
-        "note": "Seule la première feuille est importée. Les formules ne sont pas évaluées "
-        "(valeurs mises en cache par Excel).",
+    note = "Les formules ne sont pas évaluées (valeurs mises en cache par Excel)."
+    if sheets == "first":
+        info = {
+            "engine": engine,
+            "sheet_mode": "first",
+            "sheet": sheet_names[0] if sheet_names else None,
+            "sheets_available": sheet_names,
+            "note": "Seule la première feuille est importée. " + note,
+        }
+        return raw, info, []
+
+    df, info, findings = _stack_sheets(raw, settings)
+    info.update({"engine": engine, "sheets_available": sheet_names, "note": note})
+    return df, info, findings
+
+
+def _stack_sheets(
+    frames: dict[str, pd.DataFrame], settings: Settings
+) -> tuple[pd.DataFrame, dict[str, Any], list[dict[str, Any]]]:
+    """Empile les feuilles non vides (mêmes colonnes, même ordre) sans modifier les lignes."""
+    kept = {name: f for name, f in frames.items() if f.shape[1] > 0 and len(f) > 0}
+    skipped = [name for name in frames if name not in kept]
+    if not kept:
+        raise InvalidFileError("Toutes les feuilles du classeur sont vides.")
+
+    ref_name, ref = next(iter(kept.items()))
+    ref_cols = [str(c) for c in ref.columns]
+    for name, f in kept.items():
+        cols = [str(c) for c in f.columns]
+        if cols != ref_cols:
+            missing = [c for c in ref_cols if c not in cols]
+            extra = [c for c in cols if c not in ref_cols]
+            detail = []
+            if missing:
+                detail.append(f"absentes : {missing}")
+            if extra:
+                detail.append(f"en plus : {extra}")
+            if not detail:
+                detail.append("ordre différent")
+            raise InvalidFileError(
+                f"Les feuilles « {ref_name} » et « {name} » n'ont pas les mêmes colonnes "
+                f"({'; '.join(detail)}). Importez-les séparément (mode « première feuille »)."
+            )
+
+    total = sum(len(f) for f in kept.values())
+    if total > settings.max_rows:
+        raise FileTooLargeError(
+            f"Les feuilles totalisent {total:,} lignes ; la limite est {settings.max_rows:,} "
+            "(paramètre ORACLE_MAX_ROWS).".replace(",", " ")
+        )
+
+    findings = _cross_sheet_duplicates(kept)
+    df = pd.concat(list(kept.values()), ignore_index=True)
+    info: dict[str, Any] = {
+        "sheet_mode": "all",
+        "sheet": ", ".join(kept),
+        "sheets_imported": [
+            f"{name} : {len(f):,} lignes".replace(",", " ") for name, f in kept.items()
+        ],
     }
-    return df, info
+    if skipped:
+        info["sheets_skipped"] = [f"{name} (vide)" for name in skipped]
+    return df, info, findings
+
+
+def _cross_sheet_duplicates(frames: dict[str, pd.DataFrame]) -> list[dict[str, Any]]:
+    """Compte, pour chaque feuille après la première, les lignes strictement identiques à une
+    ligne d'une feuille précédente (typiquement un chevauchement de période)."""
+    seen: set[int] = set()
+    per_sheet: dict[str, int] = {}
+    for i, (name, f) in enumerate(frames.items()):
+        hashes = pd.util.hash_pandas_object(f.astype(str), index=False)
+        if i > 0:
+            n = int(hashes.isin(seen).sum())
+            if n:
+                per_sheet[name] = n
+        seen.update(hashes.tolist())
+    if not per_sheet:
+        return []
+    total = sum(per_sheet.values())
+    detail = ", ".join(f"« {k} » : {v}" for k, v in per_sheet.items())
+    return [
+        {
+            "code": "cross_sheet_duplicates",
+            "severity": "warning",
+            "count": total,
+            "message": f"{total} lignes d'une feuille sont strictement identiques à des lignes "
+            f"d'une feuille précédente ({detail}) : chevauchement probable entre feuilles. "
+            "Elles sont conservées et comptées dans les doublons ; à exclure avant tout total.",
+        }
+    ]
 
 
 _SMALL_XML_LIMIT = 2 * 1_048_576
@@ -200,7 +294,7 @@ def _check_zip_entries(
         read_size = sum(i.file_size for i in infos)
     if read_size > settings.max_xlsx_uncompressed_mb * 1_048_576:
         raise FileTooLargeError(
-            f"La feuille importée fait {read_size / 1_048_576:.0f} Mo une fois décompressée ; "
+            f"Les feuilles à lire font {read_size / 1_048_576:.0f} Mo une fois décompressées ; "
             f"la limite est {settings.max_xlsx_uncompressed_mb:g} Mo "
             "(paramètre ORACLE_MAX_XLSX_UNCOMPRESSED_MB)."
         )

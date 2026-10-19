@@ -14,7 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 REPO_DIR = BACKEND_DIR.parent
 
-ENGINE_VERSION = "0.2.0"
+ENGINE_VERSION = "0.2.1"
 
 
 class Settings(BaseSettings):
@@ -35,9 +35,9 @@ class Settings(BaseSettings):
 
     # Limites d'import (fichiers traités comme non fiables).
     max_upload_mb: float = Field(default=50.0, gt=0)
-    max_rows: int = Field(default=600_000, gt=0)
+    max_rows: int = Field(default=1_200_000, gt=0)  # Online Retail II complet ≈ 1,07 M
     max_columns: int = Field(default=200, gt=0)
-    max_xlsx_uncompressed_mb: float = Field(default=300.0, gt=0)
+    max_xlsx_uncompressed_mb: float = Field(default=600.0, gt=0)
 
     # Copies de travail en mémoire : nombre max de datasets et durée de vie.
     workspace_max_datasets: int = Field(default=5, gt=0)

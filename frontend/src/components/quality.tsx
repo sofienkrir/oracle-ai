@@ -340,12 +340,16 @@ const PARSE_LABELS: Record<string, string> = {
   encoding: 'Encodage',
   delimiter: 'Séparateur',
   engine: 'Moteur Excel',
-  sheet: 'Feuille importée',
+  sheet_mode: 'Mode de lecture Excel',
+  sheet: 'Feuille(s) importée(s)',
+  sheets_imported: 'Lignes par feuille',
+  sheets_skipped: 'Feuilles ignorées',
   sheets_available: 'Feuilles disponibles',
   note: 'Note',
 }
 
-function showValue(v: unknown): string {
+function showValue(v: unknown, key?: string): string {
+  if (key === 'sheet_mode') return v === 'all' ? 'Toutes les feuilles, empilées' : 'Première feuille seulement'
   if (Array.isArray(v)) return v.join(', ')
   if (v === '\t') return 'tabulation'
   if (v === null || v === undefined) return '—'
@@ -365,7 +369,7 @@ export function ParseInfo({ dataset }: { dataset: DatasetDetail }) {
         {Object.entries(dataset.parse_info).map(([k, v]) => (
           <div key={k} className="kv-row">
             <dt>{PARSE_LABELS[k] ?? k}</dt>
-            <dd>{showValue(v)}</dd>
+            <dd>{showValue(v, k)}</dd>
           </div>
         ))}
         <div className="kv-row">

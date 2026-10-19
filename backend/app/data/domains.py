@@ -135,7 +135,22 @@ def _retail_checks(df: pd.DataFrame) -> list[QualityIssue]:
                 )
             )
     if inv is not None:
-        n_cancel = int(df[inv].astype("string").str.upper().str.startswith("C").fillna(False).sum())
+        first = df[inv].astype("string").str.strip().str.upper().str[0]
+        n_cancel = int((first == "C").fillna(False).sum())
+        other = first[first.str.match(r"[A-Z]").fillna(False) & (first != "C")]
+        if len(other):
+            counts = ", ".join(f"« {k} » : {v}" for k, v in other.value_counts().items())
+            issues.append(
+                QualityIssue(
+                    code="retail_other_invoice_prefix",
+                    severity="info",
+                    column=inv,
+                    count=len(other),
+                    message=f"{len(other)} lignes ont un numéro de facture commençant par une "
+                    f"autre lettre que « C » ({counts}). Souvent des ajustements comptables : "
+                    "à examiner avant tout calcul de chiffre d'affaires.",
+                )
+            )
         if n_cancel:
             issues.append(
                 QualityIssue(

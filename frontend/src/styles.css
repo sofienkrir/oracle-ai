@@ -1069,6 +1069,46 @@ h3.sub {
   margin-bottom: 6px;
 }
 
+/* ------------------------------------------------------------------ sheet mode */
+
+.sheet-mode {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 12px 16px 14px;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
+}
+.sheet-mode legend {
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.sheet-mode label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  cursor: pointer;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+}
+.sheet-mode label:has(input:checked) {
+  border-color: rgba(255, 122, 26, 0.45);
+  background: var(--accent-soft);
+}
+.sheet-mode input {
+  accent-color: var(--accent);
+  margin-top: 3px;
+}
+.sheet-mode label > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 /* ------------------------------------------------------------------ responsive */
 
 @media (max-width: 1200px) {
@@ -1127,6 +1167,7 @@ h3.sub {
   }
   .stats,
   .stats-5,
+  .sheet-mode,
   .grid-2,
   .sample-grid {
     grid-template-columns: minmax(0, 1fr);

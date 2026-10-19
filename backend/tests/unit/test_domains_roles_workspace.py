@@ -47,6 +47,16 @@ def test_retail_checks_counts():
     assert by_code["retail_non_positive_price"].count == 1
     assert by_code["retail_cancellations"].count == 1
     assert by_code["retail_missing_customer"].count == 1
+    assert "retail_other_invoice_prefix" not in by_code
+
+
+def test_retail_other_invoice_prefix():
+    df = RETAIL.copy()
+    df["InvoiceNo"] = ["1", "A2", "C3"]
+    by_code = {i.code: i for i in profile_dataframe(df).issues}
+    assert by_code["retail_other_invoice_prefix"].count == 1
+    assert "« A » : 1" in by_code["retail_other_invoice_prefix"].message
+    assert by_code["retail_cancellations"].count == 1
 
 
 def test_maintenance_leakage_and_imbalance():
@@ -70,6 +80,10 @@ def test_roles_validation():
         validate_roles(r, {"Type": "measure", "nope": "numeric", "UDI": "datetime"})
     errors = e.value.details["errors"]
     assert set(errors) == {"Type", "nope", "UDI"}
+
+    # Les rôles déjà confirmés sont conservés quand on en modifie un autre.
+    kept = validate_roles(r, {"Type": "categorical"}, current={**merged, "Torque [Nm]": "ignore"})
+    assert kept["Torque [Nm]"] == "ignore"
 
     with pytest.raises(InvalidRolesError) as e:
         validate_roles(r, {"Tool wear [min]": "target"})

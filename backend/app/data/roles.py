@@ -15,10 +15,15 @@ def default_roles(report: QualityReport) -> dict[str, ColumnRole]:
     return {c.name: c.suggested_role for c in report.columns}
 
 
-def validate_roles(report: QualityReport, roles: dict[str, str]) -> dict[str, ColumnRole]:
+def validate_roles(
+    report: QualityReport,
+    roles: dict[str, str],
+    current: dict[str, ColumnRole] | None = None,
+) -> dict[str, ColumnRole]:
     """Vérifie la compatibilité de chaque rôle avec le contenu de la colonne.
 
-    Retourne le dictionnaire complet (rôles non fournis = suggestion par défaut).
+    Retourne le dictionnaire complet : les rôles fournis s'appliquent par-dessus les rôles
+    déjà confirmés (`current`), à défaut par-dessus les suggestions.
     Lève `InvalidRolesError` avec le détail par colonne si un rôle est incompatible.
     """
     profiles = {c.name: c for c in report.columns}
@@ -45,6 +50,8 @@ def validate_roles(report: QualityReport, roles: dict[str, str]) -> dict[str, Co
             errors[col] = "Une cible doit avoir au moins deux valeurs distinctes."
 
     merged: dict[str, ColumnRole] = {c.name: c.suggested_role for c in report.columns}
+    if current:
+        merged.update({k: v for k, v in current.items() if k in merged})
     merged.update({k: v for k, v in roles.items() if k not in errors})  # type: ignore[misc]
 
     n_targets = sum(1 for r in merged.values() if r == "target")
