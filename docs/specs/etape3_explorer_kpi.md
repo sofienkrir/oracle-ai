@@ -1,201 +1,296 @@
 # Spécification — Étape 3 : Explorer & KPI
 
-> Statut : **proposée, en attente de validation** (19/10/2026). Aucun code n'est écrit avant
+> Statut : **v2 proposée, en attente de validation** (19/10/2026). v2 intègre les 5
+> clarifications demandées : convention de signe et retours, ajustements comptables, unités
+> gratuites, couverture temporelle, double réconciliation. Aucun code applicatif n'est écrit avant
 > validation. Jeu de référence : UCI Online Retail II, deux feuilles empilées (≈ 1,07 M lignes).
+> L'exemple chiffré de l'annexe A a été recalculé par un script indépendant.
 
-## 1. Objectif et périmètre
+## 1. Objectif et principes
 
-L'étape 3 transforme un dataset qualifié (étape 2) en **indicateurs descriptifs vérifiables**.
-Tous les résultats sont des **faits observés** calculés de façon déterministe (pandas) :
-aucune prédiction, aucune causalité, aucun LLM.
-
-Principes non négociables :
+L'étape 3 transforme un dataset qualifié (étape 2) en **indicateurs descriptifs vérifiables**,
+calculés de façon déterministe : aucune prédiction, aucune causalité, aucun LLM.
 
 1. **Aucune ligne n'est exclue sans règle explicite**, affichée avec son nombre de lignes et
-   son montant.
+   son montant signé.
 2. **Toute exclusion est réversible** et son impact sur chaque KPI est visible (avant/après).
 3. **Les règles métier sont validées par l'utilisateur** ; un code atypique non validé n'est
-   jamais exclu automatiquement.
-4. **Réconciliation exacte** : la somme des catégories redonne toujours le total du fichier
-   (lignes et montants).
-5. Chaque KPI affiche **formule, numérateur, dénominateur, période, filtres et jeu de règles**.
+   jamais exclu automatiquement. Chaque validation crée une version tracée du jeu de règles.
+4. **Deux réconciliations distinctes** (§6) : intégrité des lignes et montants bruts, puis pont
+   financier du montant brut au CA produits net.
+5. Chaque KPI affiche **formule, numérateur, dénominateur, période, filtres et version des
+   règles**.
 
-Hors périmètre (documenté à l'écran) : marge (pas de coût d'achat), ruptures et surstock (pas de
-stock), péremption (pas de dates), détection statistique d'anomalies (étape 4), prévision
-(étape 5), explication causale (étape 6).
+Hors périmètre (affiché à l'écran) : marge (pas de coût d'achat), ruptures et surstock (pas de
+stock), péremption, détection statistique d'anomalies (étape 4), prévision (étape 5), causalité
+(étape 6).
 
-## 2. Grandeurs de base
+## 2. Conventions de calcul
 
-- `montant_ligne = Quantity × Price` (en £, devise du jeu UCI ; affichée telle quelle).
-- `préfixe_facture` = première lettre de `Invoice` si c'est une lettre, sinon aucun.
-- `code_standard` : `StockCode` conforme au motif produit `^\d{5}[A-Za-z]{0,2}$`
-  (5 chiffres + 0 à 2 lettres, ex. `22423`, `85123A`, `15056BL`). Motif affiché et modifiable.
-- `code_atypique` : tout autre `StockCode` (ex. `POST`, `C2`, `gift_0001_10`). La détection
-  ne repose **pas** sur « code sans chiffre » (règle trop fragile : `C2` ou `gift_…` contiennent
-  des chiffres).
+### 2.1 Montant signé
 
-## 3. Règles de classification des lignes
+- `m = Quantity × Price`, **toujours signé, tel que saisi** (£, devise du jeu UCI).
+  Une annulation (`Quantity < 0`, `Price > 0`) a donc un montant **négatif** ; un ajustement à
+  prix négatif a un montant négatif.
+- **Aucun montant n'est jamais « mis en valeur absolue » avant agrégation.** Les valeurs
+  absolues n'apparaissent qu'à l'**affichage** (ex. « Retours : 10,00 £ »), jamais dans une
+  formule de somme.
+- Calcul exact : `m` est converti en entier de **dix-millièmes de £**
+  (`round(Q × P × 10 000)`, prix jusqu'à 4 décimales exacts) ; toutes les sommes sont des sommes
+  d'entiers, l'affichage est arrondi au centime. Les contrôles d'égalité sont donc exacts.
 
-Chaque ligne reçoit **une seule catégorie**, en appliquant les règles **dans cet ordre** (la
-première qui s'applique gagne). Les identifiants R0…R8 sont stables (cités dans l'interface,
-l'historique et les tests).
+### 2.2 Grandeurs élémentaires
 
-| Règle | Catégorie | Condition exacte | Traitement par défaut | Réversible |
+- `préfixe` = première lettre de `Invoice` si c'est une lettre (`C`, `A`, autre), sinon aucun.
+- `code_standard` : `StockCode` conforme à `^\d{5}[A-Za-z]{0,2}$` (ex. `22423`, `85123A`,
+  `15056BL`). Motif affiché et modifiable. Tout autre code est **atypique** (ex. `POST`, `C2`,
+  `gift_0001_10`) ; la détection ne repose pas sur « code sans chiffre ».
+- `S_k` = somme des montants signés de la catégorie `k` ; `N_k` = nombre de lignes.
+
+## 3. Classification des lignes
+
+Chaque ligne reçoit **une seule catégorie**, en appliquant les règles **dans l'ordre** (la
+première qui s'applique gagne). La partition est exhaustive : toute combinaison de préfixe,
+signe de quantité et signe de prix tombe dans exactement une catégorie.
+
+| Règle | Catégorie | Condition exacte (après les règles précédentes) | Traitement par défaut | Réversible |
 |---|---|---|---|---|
-| **R0** | Doublon exact | Ligne identique sur **toutes les colonnes** à une ligne précédente (la 1re occurrence est conservée) | Exclue de tous les KPI | Oui (interrupteur) |
-| **R1** | Ajustement comptable | `préfixe_facture = A` **ou** `Price < 0` | Exclue des KPI de vente ; montant affiché à part | Oui |
-| **R2** | Annulation incohérente | `préfixe_facture = C` **et** `Quantity > 0` | Exclue ; listée comme anomalie de saisie | Oui |
-| **R3** | Annulation / retour | `préfixe_facture = C` **et** `Quantity ≤ 0` | Comptée dans **Retours** (si code produit) ou dans la catégorie de son code (si code non-produit validé, ex. remboursement de port) | Non (définition) |
-| **R4** | Préfixe de facture inconnu | `préfixe_facture` ∉ {aucun, A, C} | **Incluse** comme vente mais signalée « à valider » | Oui (validation) |
-| **R5** | Code non-produit **validé** | `code_atypique` **et** catégorie validée par l'utilisateur ∈ {Frais de port, Remise, Frais & commissions, Ajustement manuel, Échantillon, Test, Bon cadeau, Autre non-produit} | Exclue du CA produits ; affichée dans sa catégorie ; Remises et Frais de port entrent dans le **Montant facturé** | Oui |
-| **R6** | Ligne sans valeur | `Price = 0` | Exclue du CA (montant nul), des **unités** et du **comptage de commandes** | Oui |
-| **R7** | Quantité négative hors annulation | `Quantity < 0` et `préfixe_facture` ≠ C et `Price > 0` | Exclue ; listée « à examiner » (retour sans facture C) | Oui |
-| **R8** | Vente valide | Tout le reste (`Quantity > 0`, `Price > 0`, facture sans préfixe ou R4) | **Comptée** dans les KPI de vente | — |
+| **R0** | Doublon exact | Identique sur **toutes les colonnes** à une ligne précédente (1re occurrence conservée) | Exclue des KPI | Oui |
+| **R1** | Valeur manquante | `Quantity` ou `Price` manquant / non numérique (`m` non calculable) | Exclue ; comptée en lignes, montant « non calculable » | Non |
+| **R2** | Ajustement comptable | `préfixe = A` **ou** `Price < 0` | Exclue des KPI de vente ; visible en réconciliation financière (§3.2) | Oui |
+| **R3** | Ligne non-produit **validée** | Code atypique classé par l'utilisateur (Frais de port, Remise, Frais & commissions, Ajustement manuel, Échantillon, Test, Bon cadeau, Autre), **quel que soit le préfixe** | Exclue du CA produits ; montant signé conservé dans sa sous-catégorie | Oui |
+| **R4** | Annulation incohérente | `préfixe = C` **et** `Quantity > 0` | Exclue (§3.1) | Oui (2 options) |
+| **R5** | Retour produit | `préfixe = C` **et** `Quantity < 0` | **Retours** (montant négatif) | Non (définition) |
+| **R6** | Quantité nulle | `Quantity = 0` | Exclue (montant nul) | Non |
+| **R7** | Unités gratuites | `Price = 0` **et** `Quantity > 0` | Hors CA ; unités comptées à part (§3.3) | Oui |
+| **R8** | Mouvement de stock sans valeur | `Price = 0` **et** `Quantity < 0` (hors C) | Exclue (montant nul) ; listée | Non |
+| **R9** | Retour hors facture C | `Price > 0` **et** `Quantity < 0` (hors C) | Exclue ; listée « à examiner » | Oui (option « traiter comme retour ») |
+| **R10** | Vente valide | `Price > 0` **et** `Quantity > 0`, préfixe aucun ou inconnu | **Comptée** dans les ventes | — |
 
-Précisions :
+**Marqueurs** (n'affectent pas la catégorie, affichés et comptés) :
+`F1` préfixe inconnu (ni A ni C) · `F2` code atypique **non validé** · `F3` sans `Customer ID`.
 
-- **Codes atypiques non validés** : classés R8 (vente valide), **jamais exclus automatiquement**.
-  Les KPI affichent « dont X £ issus de N codes atypiques non validés ».
-- **Lignes sans `Customer ID`** : classées normalement (R8 si vente valide → comptées dans le
-  CA) ; **exclues des seuls KPI qui exigent un client identifié** (§5.4), avec dénominateur
-  affiché.
-- **Retours (R3)** : comptés **à la date de l'annulation**, sans rapprochement avec la vente
-  d'origine (qui peut précéder la période du fichier). Limite affichée.
-- **Prix négatifs** : toujours R1, quelle que soit la facture (un prix unitaire négatif n'est
-  pas une vente).
-- **Remises** (code validé « Remise ») : montant généralement négatif ; non incluses dans le
-  CA produits, incluses dans le Montant facturé et dans le « CA net après remises ».
+- Un code atypique non validé (`F2`) reste dans sa catégorie normale (souvent R10 ou R5) :
+  **jamais exclu automatiquement**. Bandeau : « dont X £ issus de N codes non validés ».
+- R3 passe **avant** les règles C : une remise ou un remboursement de port saisis sur une facture
+  `C` sont classés dans leur sous-catégorie (Remise, Frais de port), pas dans les retours
+  produits. Tant que le code n'est pas validé, ils restent en R5 (marqués `F2`).
 
-## 4. Validation des règles métier (codes atypiques)
+### 3.1 Retours et annulations (point 1)
 
-1. L'outil liste **tous** les codes atypiques avec : nombre de lignes, montant total, nombre de
-   factures, 3 descriptions les plus fréquentes, période d'apparition.
-2. Il **propose** une catégorie à partir de la description (mots-clés documentés : `POSTAGE` →
-   Frais de port, `DISCOUNT` → Remise, `MANUAL` → Ajustement manuel, `BANK CHARGES` /
-   `FEE` / `COMMISSION` → Frais & commissions, `ADJUST` → Ajustement, `SAMPLE` → Échantillon,
-   `TEST` → Test, `GIFT` / `VOUCHER` → Bon cadeau). La proposition est marquée **« proposée »**
-   et **n'est pas appliquée**.
-3. L'utilisateur confirme ou corrige chaque code (catégorie = « Produit » possible), puis
-   **valide le jeu de règles**.
-4. Chaque validation crée une **version** du jeu de règles (`v1`, `v2`…), enregistrée dans
-   l'historique avec les modifications ; chaque résultat de KPI cite la version utilisée.
+```
+Ventes brutes          VB  = S_R10                     (≥ 0)
+Retours signés         RS  = S_R5                      (≤ 0)
+Retours (affichage)    R   = −RS                       (≥ 0, affichage uniquement)
+CA produits net        CAN = Σ m sur R10 ∪ R5 = VB + RS
+Taux de retour         TR  = R / VB
+```
 
-Le jeu de règles contient aussi : interrupteurs R0, R1, R2, R4, R6, R7 ; motif `code_standard` ;
-seuils de rotation lente (§5.6).
+- **Une seule soustraction** : le CA net est la **somme signée** des lignes R10 et R5. Il n'existe
+  aucune formule du type `VB − |RS|` appliquée à un total qui contiendrait déjà RS. Test
+  automatique : `CAN = VB + RS = VB − R`, et `CAN = Σ m(R10 ∪ R5)` calculé indépendamment.
+- Les retours sont comptés **à la date de l'annulation**, sans rapprochement avec la vente
+  d'origine (qui peut précéder la période). Limite affichée.
+- **Factures C incohérentes (R4, `Quantity > 0`)** : leur montant est **positif** ; les compter
+  comme retours tels quels **augmenterait** le CA. Trois traitements, au choix de l'utilisateur :
+  1. **Exclure** (défaut) : listées, montant affiché, aucun effet sur les KPI.
+  2. **Traiter comme retour à signe corrigé** : contribution `−|m|` aux retours.
+  3. (Non proposé) inclure tel quel : refusé car il ajouterait du CA à partir d'une annulation.
+
+### 3.2 Ajustements comptables et prix négatifs (point 2)
+
+- R2 regroupe `préfixe A` (ajustements de créances, etc.) **et** toute ligne à `Price < 0`.
+- Exclues des KPI de vente, elles restent **visibles avec leur montant signé** dans une section
+  dédiée de la réconciliation financière : nombre de lignes, `S_R2`, détail par facture/code,
+  descriptions.
+- Impact expliqué : « Inclure les ajustements ferait passer le CA net de CAN à CAN + S_R2. »
+- Indicateur complémentaire : **Total enregistré** = `CAN + S_R3 + S_R2` (tout ce qui a un
+  montant, hors doublons, anomalies et R9), pour rapprocher d'une vision comptable.
+
+### 3.3 Unités gratuites et commandes (point 3)
+
+```
+Unités payantes      UP = Σ Quantity sur R10
+Unités gratuites     UG = Σ Quantity sur R7
+Commandes            C  = nb de factures distinctes ayant ≥ 1 ligne R10
+Factures sans vente payante = factures sans ligne R10 (listées)
+Panier moyen         PM = VB / C
+Prix moyen unitaire  PU = VB / UP
+```
+
+- Une ligne gratuite **n'empêche jamais** de compter une facture : c'est la présence d'au moins
+  une ligne R10 qui fait la commande ; les lignes R7 de la même facture sont simplement hors CA et
+  hors `UP`.
+- Une facture ne contenant **que** des lignes gratuites n'est pas une commande ; elle est comptée
+  dans « factures sans vente payante ».
+
+### 3.4 Autres indicateurs dérivés
+
+```
+Remises (signées)          RM = S_R3[Remise]            (≤ 0 en général)
+Frais de port (signés)     FP = S_R3[Frais de port]
+CA net après remises       = CAN + RM
+Montant facturé            = CAN + RM + FP
+```
+
+## 4. Validation des règles métier
+
+1. L'outil liste **tous** les codes atypiques : lignes, montant signé, factures, 3 descriptions
+   les plus fréquentes, période, part sur factures `C`.
+2. Il **propose** une catégorie d'après la description (mots-clés documentés : `POSTAGE`,
+   `CARRIAGE` → Frais de port ; `DISCOUNT` → Remise ; `MANUAL` → Ajustement manuel ;
+   `BANK CHARGES`, `FEE`, `COMMISSION` → Frais & commissions ; `ADJUST` → Ajustement ;
+   `SAMPLE` → Échantillon ; `TEST` → Test ; `GIFT`, `VOUCHER` → Bon cadeau). Statut
+   **« proposée »**, **non appliquée**.
+3. L'utilisateur confirme ou corrige (« Produit » possible), choisit les options (R0, R2, R4,
+   R7, R9, motif de code, seuils), puis **valide** : nouvelle version `vN` enregistrée avec le
+   détail des changements. Tous les résultats citent `vN`.
 
 ## 5. Indicateurs
 
-### 5.1 Ventes (lignes R8)
+### 5.1 Ventes — voir §3.1, §3.3, §3.4.
 
-| KPI | Formule | Dénominateur / remarque |
+### 5.2 Couverture temporelle et périodes (point 4)
+
+**Fenêtre d'observation** `[J_min, J_max]` = premier et dernier **jour** (date sans heure) portant
+au moins une ligne, toutes catégories confondues (hors R1). Elle ne dépend pas des filtres de
+règles.
+
+Pour chaque période calendaire `P = [début, fin]` (mois, ou semaine ISO), on distingue :
+
+| Statut | Règle | Traitement |
 |---|---|---|
-| CA produits brut | Σ `montant_ligne` (R8) | — |
-| Retours produits | Σ \|`montant_ligne`\| (R3 sur codes produits) | Date d'annulation |
-| **CA produits net** | CA brut − Retours | KPI principal |
-| CA net après remises | CA net + Σ remises (R5 « Remise », négatives) | — |
-| Montant facturé | CA net + frais de port + remises (R5) | Rapprochable des factures |
-| Taux de retour | Retours ÷ CA brut | Même période, limite affichée |
-| Commandes | nb de `Invoice` distinctes ayant ≥ 1 ligne R8 | — |
-| Panier moyen | CA brut ÷ Commandes | — |
-| Unités vendues | Σ `Quantity` (R8) | — |
-| Prix moyen unitaire | CA brut ÷ Unités | — |
+| **Complète** | `début ≥ J_min` **et** `fin ≤ J_max` (entièrement dans la fenêtre) | Comparée normalement |
+| **Partielle (bord)** | La période chevauche la fenêtre sans y être incluse | Affichée grisée avec sa **couverture** = jours de P dans la fenêtre ÷ jours de P ; **exclue des comparaisons** |
+| Hors fenêtre | Aucune intersection | Non affichée |
 
-### 5.2 Temps
+**Données absentes ≠ période incomplète.** À l'intérieur de la fenêtre, un jour sans aucune
+ligne est un **jour sans données** ; il ne rend pas la période incomplète. L'outil affiche :
 
-- Agrégation **mensuelle** (par défaut) et **hebdomadaire** (semaine ISO).
-- **Période incomplète** : un mois dont les données ne couvrent pas tous les jours calendaires
-  entre son 1er et son dernier jour attendu (ex. décembre 2011 s'arrêtant le 9) est marqué et
-  **exclu des comparaisons** (affiché grisé).
-- Comparaisons : mois vs mois précédent ; mois vs même mois de l'année précédente (si les deux
-  sont complets).
+- le nombre de jours sans données par période et **par jour de semaine** (ex. « 0 ligne sur
+  104 samedis » : fermeture structurelle) ;
+- les **trous** : suites d'au moins `G` jours consécutifs sans données (défaut `G = 7`,
+  configurable), avec leurs dates ; la période qui les contient reste « complète » mais porte un
+  avertissement « trou de X jours : fermeture ou données manquantes ? ».
+
+Comparaisons : mois vs mois précédent et vs même mois N-1, **uniquement entre périodes
+complètes** ; sinon « comparaison impossible (période partielle) ».
 
 ### 5.3 Décomposition d'une variation (descriptive)
 
-Pour deux périodes P0 → P1 : `CA = Commandes × Panier`, donc
-`ΔCA = ΔCommandes × Panier₀ + Commandes₀ × ΔPanier + ΔCommandes × ΔPanier` (somme exacte
-affichée). Contributions à ΔCA par **pays** et par **produit** (top 10 hausses / baisses).
-Étiquette obligatoire : « Association descriptive — n'établit pas de cause ».
+`CA = C × PM` ⇒ `ΔCA = ΔC × PM₀ + C₀ × ΔPM + ΔC × ΔPM` (somme exacte affichée), puis
+contributions par pays et par produit (top 10). Étiquette : « Association descriptive — n'établit
+pas de cause ».
 
-### 5.4 Clients (lignes R8 avec `Customer ID`)
+### 5.4 Clients (lignes R10 avec `Customer ID`)
 
-Clients actifs, nouveaux clients (1er achat dans la période, sur l'historique disponible),
-clients récurrents, taux de réachat, CA moyen par client identifié, **part du CA sans client
-identifié**. Chaque KPI affiche « calculé sur N lignes identifiées (x % des ventes valides) ».
+Clients actifs, nouveaux (1er achat dans la période, sur l'historique disponible), récurrents,
+taux de réachat, CA moyen par client identifié, **part du CA sans client** = `1 − VB_identifié /
+VB`. Chaque KPI affiche « calculé sur N lignes identifiées (x % des ventes valides) ». Les lignes
+sans client restent dans VB, CAN, C, UP.
 
-### 5.5 Pays
+### 5.5 Pays, 5.6 Produits, 5.7 Autres domaines
 
-CA net, commandes, panier moyen et part du CA par pays ; part du pays dominant.
+Inchangés par rapport à v1 : CA net et parts par pays ; top produits, retours par produit, ABC
+(80 / 95 %), rotation lente (≥ 90 jours sans vente **ou** < 25 % des semaines vendues depuis la 1re
+vente, seuils configurables, « trop récent » si < 8 semaines) ; KPI maintenance et statistiques
+génériques.
 
-### 5.6 Produits
+## 6. Les deux réconciliations (point 5)
 
-- Top produits par CA net et par unités ; produits les plus retournés (montant, taux).
-- **ABC** : tri par CA net décroissant ; A = cumul ≤ 80 %, B = 80–95 %, C = > 95 % (seuils
-  affichés).
-- **Rotation lente** (sens « fréquence de vente », pas rotation de stock comptable) : pour chaque
-  produit, date de dernière vente, jours depuis (référence = dernière date du dataset filtré),
-  part des semaines avec ≥ 1 vente depuis sa 1re vente, unités / semaine. « Lent » si
-  `jours depuis dernière vente ≥ 90` **ou** `part des semaines < 25 %` — **seuils
-  configurables** ; un produit vendu depuis moins de 8 semaines est « trop récent pour
-  conclure ».
+### 6.1 Réconciliation d'intégrité (lignes et montants bruts)
 
-### 5.7 Autres domaines
+But : prouver qu'**aucune ligne ni aucun montant ne disparaît**. Une ligne par catégorie R0…R10 :
+`N_k`, `S_k`, `Σ Quantity_k`, part des lignes. Contrôles affichés ✓/✗ :
 
-- **Maintenance** : taux de panne global et par `Type`, statistiques des capteurs par classe
-  (descriptif, pas de modèle).
-- **Générique** : statistiques descriptives, distributions (histogrammes), corrélations
-  descriptives entre colonnes numériques (Pearson et Spearman, avec mention « corrélation ≠
-  causalité »).
+```
+Σ_k N_k = nombre de lignes du fichier
+Σ_k S_k = M_brut = Σ m sur toutes les lignes où m est calculable (R1 exclu, compté à part)
+```
 
-## 6. Transparence : impact des règles
+Aucune notion de CA ici : c'est un contrôle de partition.
 
-1. **Tableau de réconciliation** : pour chaque catégorie R0…R8 → lignes, montant, part. Total =
-   total du fichier (contrôle affiché ✓/✗).
-2. **Pont « somme naïve → CA produits net »** : Σ `montant_ligne` de toutes les lignes, puis
-   chaque règle retire ou reclasse un montant, jusqu'au CA net.
-3. **Avant / après par règle** : pour chaque règle réversible, valeur des KPI principaux (CA net,
-   commandes, panier moyen, unités, clients actifs) avec la règle active et désactivée, et l'écart.
-4. **Détail** : clic sur une règle → lignes concernées (paginées), exportables en CSV.
+### 6.2 Réconciliation financière (pont M_brut → CA produits net)
 
-## 7. API (prévue)
+But : expliquer le passage du montant brut au CA. Chaque étape retire le montant signé d'une
+catégorie exclue, avec son explication :
 
-| Méthode | Route | Rôle |
-|---|---|---|
-| GET | `/api/datasets/{id}/rules` | Jeu de règles courant + codes atypiques et propositions |
-| PUT | `/api/datasets/{id}/rules` | Valider une nouvelle version du jeu de règles |
-| GET | `/api/datasets/{id}/kpi?from=&to=&country=&granularity=` | KPI, séries, réconciliation, pont, impact |
-| GET | `/api/datasets/{id}/kpi/products?…` | Top, ABC, rotation lente |
-| GET | `/api/datasets/{id}/kpi/lines?rule=R3&offset=&limit=` | Lignes d'une catégorie |
-| GET | `/api/datasets/{id}/kpi/export?format=csv\|json` | Export des résultats |
+```
+M_brut
+ − S_R0  doublons exacts
+ − S_R2  ajustements comptables (A, prix < 0)
+ − S_R3  lignes non-produit validées (dont remises RM, frais de port FP, …)
+ − S_R4  annulations incohérentes (option 1)
+ − S_R6 − S_R7 − S_R8   (montants nuls, affichés pour mémoire)
+ − S_R9  retours hors facture C
+ = CAN = S_R10 + S_R5
+```
 
-Chaque calcul est journalisé (`kind = "kpi"`) avec filtres, version des règles et résumé.
+Contrôle ✓/✗ : le résultat du pont égale `S_R10 + S_R5` calculé directement.
 
-## 8. Interface « Explorer »
+### 6.3 Avant / après par règle
 
-Onglets : **Règles** (codes atypiques à valider, interrupteurs, seuils) · **Vue d'ensemble**
-(cartes KPI avec formule, série mensuelle CA net / retours avec mois incomplets grisés,
-réconciliation, pont) · **Évolution** (comparaisons, décomposition) · **Produits** (top, ABC,
-rotation lente) · **Clients & pays**. Filtres : période, pays. Bandeau permanent si des codes
-atypiques ne sont pas validés.
+Pour chaque règle ou option réversible : KPI principaux (VB, R, CAN, C, PM, UP, clients actifs)
+avec le réglage courant et avec ce seul réglage inversé, et l'écart. Clic → lignes concernées
+(paginées, export CSV).
 
-## 9. Vérification
+## 7. API, interface, vérification, acceptation
 
-1. **Fixture calculée à la main** (~20 lignes couvrant R0…R8, sans client, remise, port, mois
-   incomplet) : valeurs exactes attendues pour chaque KPI.
-2. **Invariant de réconciliation** testé sur fixtures, échantillons synthétiques et fichier
-   réel : Σ catégories = total (lignes et montants, au centime).
-3. **Recalcul indépendant** : script séparé (`scripts/verify_kpi.py`), écrit sans réutiliser
-   le module, recalculant CA net mensuel, commandes et retours ; écart attendu = 0.
-4. **Contrôle manuel Excel** : procédure documentée (tableau croisé sur un mois, filtres
-   équivalents aux règles) pour retrouver le CA net affiché.
-5. **Non-régression** : tous les tests existants (étapes 1–2) restent verts ; CI Linux + Windows.
-6. **Performance** : KPI sur 1,07 M lignes en moins de 10 s (objectif, à mesurer et reporter).
+- **API** (prévue) : `GET/PUT /api/datasets/{id}/rules` · `GET /api/datasets/{id}/kpi` (KPI,
+  séries, couverture, réconciliations, impacts ; filtres `from`, `to`, `country`,
+  `granularity`) · `GET …/kpi/products` · `GET …/kpi/lines?category=R5` · `GET …/kpi/export`.
+  Chaque calcul est journalisé (`kind = "kpi"`) avec filtres et version des règles.
+- **Interface « Explorer »** : onglets Règles · Vue d'ensemble · Réconciliations · Évolution ·
+  Produits · Clients & pays ; bandeau si des codes ne sont pas validés.
+- **Vérification** :
+  1. la fixture de l'annexe A est un test automatique (valeurs exactes) ;
+  2. les invariants §6.1 et §6.2 sont testés sur fixtures, échantillons synthétiques et fichier
+     réel ;
+  3. le script indépendant `scripts/verify_kpi.py` recalcule CA net mensuel, commandes et retours
+     sans réutiliser le module ;
+  4. une procédure Excel permet de retrouver le CA net d'un mois ;
+  5. tous les tests des étapes 1–2 restent verts, en CI Linux et Windows ;
+  6. objectif de performance : KPI sur 1,07 M lignes en moins de 10 s (à mesurer et consigner).
+- **Acceptation** : partition exhaustive et réconciliations exactes sur le fichier réel ; aucune
+  exclusion de code sans validation ; impacts avant/après visibles ; KPI clients limités aux
+  lignes identifiées ; périodes partielles et trous distingués ; résultats et limites consignés
+  dans `docs/evaluation.md`.
 
-## 10. Critères d'acceptation
+## Annexe A — Exemple chiffré (fixture de test)
 
-- Les 9 catégories et leurs comptes s'affichent ; la réconciliation est exacte sur le fichier réel.
-- Aucun code atypique n'est exclu sans validation ; la version des règles est tracée.
-- Chaque règle réversible montre son impact avant/après sur les KPI principaux.
-- Les KPI clients n'utilisent que des lignes identifiées et l'indiquent.
-- Les mois incomplets sont signalés et exclus des comparaisons.
-- Le recalcul indépendant concorde ; les résultats et limites sont consignés dans
-  `docs/evaluation.md` avec la date d'exécution.
+Codes validés : `POST` → Frais de port, `D` → Remise. `GIFTX1` est atypique **non validé**.
+
+| # | Facture | Code | Q | Prix | Client | Catégorie | m (£) |
+|---|---|---|---|---|---|---|---|
+| 1 | 1001 | 22423 | 2 | 10,00 | 17001 | R10 vente | +20,00 |
+| 2 | 1001 | 22423 | 2 | 10,00 | 17001 | R0 doublon de #1 | +20,00 |
+| 3 | 1001 | 85123A | 1 | 0,00 | 17001 | R7 gratuit | 0,00 |
+| 4 | 1001 | POST | 1 | 5,00 | 17001 | R3 frais de port | +5,00 |
+| 5 | 1002 | 22423 | 3 | 10,00 | — | R10 vente (F3) | +30,00 |
+| 6 | 1003 | 85123A | 4 | 0,00 | 17002 | R7 gratuit | 0,00 |
+| 7 | C1004 | 22423 | −1 | 10,00 | 17001 | R5 retour | −10,00 |
+| 8 | C1005 | D | −1 | 3,00 | 17001 | R3 remise | −3,00 |
+| 9 | C1006 | 22423 | 2 | 10,00 | 17002 | R4 C incohérente | +20,00 |
+| 10 | A1007 | B | 1 | −50,00 | — | R2 ajustement | −50,00 |
+| 11 | 1008 | 22423 | −5 | 0,00 | — | R8 stock sans valeur | 0,00 |
+| 12 | 1009 | 22423 | −2 | 10,00 | 17002 | R9 retour hors C | −20,00 |
+| 13 | 1010 | 22423 | 0 | 10,00 | 17002 | R6 quantité nulle | 0,00 |
+| 14 | 1011 | 22423 | 1 | 10,00 | 17003 | R10 vente | +10,00 |
+| 15 | 1012 | 22423 | 1 | — | 17003 | R1 valeur manquante | n.c. |
+| 16 | 1013 | GIFTX1 | 1 | 20,00 | 17003 | R10 vente (F2) | +20,00 |
+
+**Intégrité (§6.1)** : 16 lignes = 1 (R0) + 1 (R1) + 1 (R2) + 2 (R3) + 1 (R4) + 1 (R5) + 1 (R6) + 2 (R7) + 1 (R8) + 1 (R9) + 4 (R10) ✓ ; `M_brut = 42,00 £` (15 montants
+calculables) = Σ S_k ✓.
+
+**Pont (§6.2)** : 42,00 − 20,00 (R0) − (−50,00) (R2) − 2,00 (R3 : +5 port −3 remise) −
+20,00 (R4) − 0 (R6, R7, R8) − (−20,00) (R9) = **70,00 £** = S_R10 + S_R5 = 80,00 − 10,00 ✓.
+
+**KPI** : VB = 80,00 · Retours R = 10,00 · **CAN = 70,00** · TR = 12,5 % · Commandes = 4
+(1001, 1002, 1011, 1013 ; la facture 1003, 100 % gratuite, n'en est pas une ; la facture 1001
+compte malgré sa ligne gratuite) · PM = 20,00 · UP = 7 · UG = 5 · CA net après remises = 67,00 ·
+Montant facturé = 72,00 · Clients actifs = 2 · Part du CA sans client = 37,5 % · Bandeau
+« dont 20,00 £ issus de 1 code non validé ».
+
+**Avant / après** : C incohérente traitée comme retour → CAN 50,00 (inclure tel quel donnerait
+90,00 : refusé) · doublons inclus → VB 100,00, CAN 90,00 · ajustements inclus → 20,00 ·
+`GIFTX1` validé comme Bon cadeau → VB 60,00, CAN 50,00, commandes 3.
