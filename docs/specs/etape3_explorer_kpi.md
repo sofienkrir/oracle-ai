@@ -1,14 +1,17 @@
 # Spécification — Étape 3 : Explorer & KPI
 
-> Statut : **v3 proposée, en attente de validation** (19/10/2026). Aucun code applicatif n'est
-> écrit avant validation. Jeu de référence : UCI Online Retail II, deux feuilles empilées
+> Statut : **v4 proposée, en attente de validation explicite** (19/10/2026). Aucun code applicatif
+> n'est écrit avant validation. Jeu de référence : UCI Online Retail II, deux feuilles empilées
 > (≈ 1,07 M lignes).
 >
 > Historique : v1 règles R0–R8 · v2 signes, ajustements, unités gratuites, couverture, double
 > réconciliation · **v3** corrections issues du recalcul indépendant (annexe D) : facturation
 > client indicative, pont pour la configuration active, options réversibles et recalcul complet,
-> valeurs manquantes, factures sans vente payante. L'annexe A est vérifiée par
-> `docs/specs/verif_annexe_a.py` (oracle indépendant, `Decimal`, sans pandas).
+> valeurs manquantes, factures sans vente payante · **v4** registre ligne par ligne (chaque ligne
+> contribue une seule fois), O2 devient un indicateur distinct, couverture « dans la fenêtre » ≠
+> « couverture vérifiée », part des ventes sans client (formule, VB = 0), état réel des
+> vérifications (§8). L'annexe A est vérifiée par `docs/specs/verif_annexe_a.py` (oracle
+> indépendant, `Decimal`, sans pandas — ce n'est pas un test de l'application).
 
 ## 1. Objectif et principes
 
@@ -108,7 +111,8 @@ Taux de retour         TR  = R / VB
 - Exclues des KPI de vente, elles restent **visibles avec leur montant signé** dans une section
   dédiée de la réconciliation financière : nombre de lignes, `S_R2`, détail par facture/code,
   descriptions.
-- Impact expliqué : « Inclure les ajustements ferait passer le CA net de CAN à CAN + S_R2. »
+- Impact expliqué via l'option O2 (§3.5) : un indicateur **distinct**, « CA net y compris
+  ajustements comptables » `CANA = CAN + S_R2`, s'affiche à côté du CAN, qui ne change pas.
 - *(v3 : l'indicateur « Total enregistré » de la v2 est supprimé ; il mélangeait des natures
   différentes. La réconciliation d'intégrité §6.1 donne déjà le montant de chaque catégorie.)*
 
@@ -163,12 +167,13 @@ hors C (R9) en sont exclus par défaut ; sa valeur dépend du marquage des sous-
 Tous les indicateurs sont une **fonction pure** `KPI = f(données, jeu de règles, filtres)`.
 Changer une option relance **le calcul complet** (catégories, ventes, unités, commandes, panier,
 clients, facturation, séries temporelles, produits, réconciliations) : aucun KPI n'est mis à jour
-isolément. Le tableau avant/après (§6.3) affiche **tous** les KPI principaux.
+isolément. Le tableau avant/après (§6.3) affiche **tous** les KPI principaux. Les options sont
+**indépendantes et cumulables** : les 16 combinaisons de O1 à O4 sont valides et vérifiées (§6.2).
 
 | Option | Défaut | Alternative | Effet exact de l'alternative |
 |---|---|---|---|
 | **O1** Doublons | Exclus (R0) | Inclus | Les lignes R0 sont reclassées par R1…R10 comme des lignes ordinaires |
-| **O2** Ajustements | Hors CA | Dans le CA net | `CAN += S_R2` ; VB, R, C, UP, clients inchangés |
+| **O2** Ajustements | Non affichés dans le CA | Indicateur distinct **CANA** | Ajoute la carte « CA net y compris ajustements comptables » `CANA = CAN + S_R2`, avec la mention « inclut des écritures d'ajustement : ce n'est pas un chiffre de ventes ». **Ne modifie ni** VB, R, **CAN**, TR, C, PM, UP, PU, KPI clients, **ni** FCI ni le pont |
 | **O3** C incohérentes | Exclues | Retours à signe corrigé | `RS −= Σ |m|(R4)` ⇒ R, CAN, TR, FCI changent |
 | **O4** Retours hors C | Exclus | Retours | `RS += S_R9` (≤ 0) ⇒ R, CAN, TR, FCI changent |
 | **O5** Codes atypiques | Non validés (restent produits) | Catégorie validée | Lignes reclassées en R3 ⇒ tous les KPI produits et clients changent, FCI inchangée si la sous-catégorie est facturée |
@@ -212,35 +217,39 @@ l'option O4, il est ajouté aux retours. Il n'affecte jamais VB, C ni UP.
 
 ### 5.1 Ventes — voir §3.1, §3.3, §3.4.
 
-### 5.2 Couverture temporelle et périodes (point 4)
+### 5.2 Couverture temporelle et périodes
 
 **Fenêtre d'observation** `[J_min, J_max]` = premier et dernier **jour** (date sans heure) portant
 au moins une ligne, toutes catégories confondues (hors R1). Elle ne dépend pas des filtres de
 règles.
 
-Pour chaque période calendaire `P = [début, fin]` (mois, ou semaine ISO), on distingue :
+Pour chaque période calendaire `P` (mois, ou semaine ISO), l'interface affiche **trois
+informations distinctes**, jamais fusionnées en un seul statut « complète » :
 
-| Statut | Règle | Traitement |
+| Information | Définition | Ce qu'elle **ne** dit **pas** |
 |---|---|---|
-| **Complète** | `début ≥ J_min` **et** `fin ≤ J_max` (entièrement dans la fenêtre) | Comparée normalement |
-| **Partielle (bord)** | La période chevauche la fenêtre sans y être incluse | Affichée grisée avec sa **couverture** = jours de P dans la fenêtre ÷ jours de P ; **exclue des comparaisons** |
-| Hors fenêtre | Aucune intersection | Non affichée |
+| **Position dans la fenêtre** | « Intérieure » si `P` est entièrement dans `[J_min, J_max]` ; « En bord (partielle) » si elle déborde ; « Hors fenêtre » sinon | Que les données de `P` sont complètes |
+| **Jours avec données** | `jours de P ayant ≥ 1 ligne / jours de P dans la fenêtre` (ex. 16/29) | Pourquoi des jours sont vides |
+| **Couverture vérifiée** | « Non vérifiée » par défaut. Si l'utilisateur **déclare un calendrier d'activité** (jours habituels sans activité, dates de fermeture), versionné avec les règles : « conforme au calendrier déclaré » ou « écart : N jour(s) attendu(s) sans données » (liste) | — |
 
-**Données absentes ≠ période incomplète.** À l'intérieur de la fenêtre, un jour sans aucune
-ligne est un **jour sans données** ; il ne rend pas la période incomplète. L'outil affiche :
+Règles d'affichage :
 
-- le nombre de jours sans données par période et **par jour de semaine** (ex. « 0 ligne sur
-  104 samedis » : fermeture structurelle) ;
-- les **trous** : suites d'au moins `G` jours consécutifs sans données (défaut `G = 7`,
-  configurable), avec leurs dates ; la période qui les contient reste « complète » mais porte un
-  avertissement « trou de X jours : fermeture ou données manquantes ? ».
+- Un jour sans ligne est affiché comme **« jour sans données »**, jamais comme « jour de
+  fermeture ». Seul un calendrier **déclaré par l'utilisateur** peut qualifier un jour de
+  « sans activité attendue ».
+- Récurrences : nombre de jours sans données **par jour de semaine** (ex. « samedi : 10/10 jours
+  sans données »), présenté comme un constat, avec la mention neutre « cause inconnue — vous
+  pouvez déclarer un calendrier d'activité ».
+- **Interruptions longues** : suites d'au moins `G` jours consécutifs sans données (défaut
+  `G = 7`, configurable), listées avec leurs dates, signalées sur la période et sur le graphique ;
+  libellé « interruption de X jours (cause inconnue) ».
+- Une période **intérieure sans aucune ligne** affiche « 0 jour avec données » et ses KPI
+  « aucune donnée » (et non « 0 £ de ventes ») ; elle apparaît dans les interruptions.
 
-Comparaisons : mois vs mois précédent et vs même mois N-1, **uniquement entre périodes
-complètes** ; sinon « comparaison impossible (période partielle) ».
-
-Cas limite : une période **complète sans aucune ligne** (ex. un mois entier vide à l'intérieur de
-la fenêtre) affiche ses KPI à 0 avec l'avertissement « aucune donnée : fermeture ou données
-manquantes ? » et apparaît dans la liste des trous ; elle n'est jamais qualifiée de partielle.
+Comparaisons (mois vs mois précédent, vs même mois N-1) : **autorisées seulement entre périodes
+intérieures** ; si l'une des deux a des jours sans données en nombre différent, une interruption,
+ou une couverture non vérifiée, la comparaison est affichée **avec un avertissement** et le nombre
+de jours avec données de chaque période.
 
 ### 5.3 Décomposition d'une variation (descriptive)
 
@@ -251,9 +260,23 @@ pas de cause ».
 ### 5.4 Clients (lignes R10 avec `Customer ID`)
 
 Clients actifs, nouveaux (1er achat dans la période, sur l'historique disponible), récurrents,
-taux de réachat, CA moyen par client identifié, **part du CA sans client** = `1 − VB_identifié /
-VB`. Chaque KPI affiche « calculé sur N lignes identifiées (x % des ventes valides) ». Les lignes
-sans client restent dans VB, CAN, C, UP.
+taux de réachat, ventes brutes moyennes par client identifié.
+
+**Part des ventes brutes non rattachées à un client identifié** (libellé exact à l'écran) :
+
+```
+VB_anonyme = Σ m sur les lignes R10 dont Customer ID est vide
+PVA        = VB_anonyme / VB          si VB > 0
+PVA        = « non calculable (aucune vente valide) »   si VB = 0
+```
+
+- C'est une part de **montant** de ventes, pas un nombre de personnes : une ligne sans
+  identifiant peut correspondre à un client déjà connu, à un nouveau client ou à plusieurs ; le
+  **nombre de clients non identifiés est inconnu** et n'est jamais affiché.
+- Affichée avec `VB_anonyme` et le **nombre de lignes de vente sans identifiant**.
+- Base = ventes brutes VB (pas le CAN, car un retour peut ne pas être rattaché au même client).
+- Chaque KPI client affiche « calculé sur N lignes de vente identifiées (x % de VB) ». Les lignes
+  sans client restent dans VB, CAN, C, UP.
 
 ### 5.5 Pays, 5.6 Produits, 5.7 Autres domaines
 
@@ -278,32 +301,39 @@ Aucune notion de CA ici : c'est un contrôle de partition.
 
 ### 6.2 Réconciliation financière (pont M_brut → CA produits net)
 
-But : expliquer le passage du montant brut au CA **pour la configuration active**. Le pont
-retire le montant signé de chaque catégorie hors CA, puis **réintègre** ce que les options
-actives font entrer dans le CA net, avec le signe défini par l'option :
+But : expliquer le passage du montant brut au CA **pour la configuration active**, avec la garantie
+que **chaque ligne contribue exactement une fois**.
+
+**Registre ligne par ligne.** Chaque ligne `i` reçoit une seule catégorie, son montant saisi
+`m_i` et une **contribution** `c_i` au CAN :
+
+| Ligne | Contribution `c_i` |
+|---|---|
+| R10 (vente valide) | `m_i` |
+| R5 (retour produit) | `m_i` (négatif) |
+| R4 si O3 active | `−|m_i|` (signe corrigé) |
+| R9 si O4 active | `m_i` (négatif) |
+| Toute autre ligne (R0…R3, R4 et R9 hors option, R6…R8, R1) | `0` |
 
 ```
-M_brut
- − S_R0  doublons exacts                    (0 si O1 = inclus : lignes déjà reclassées)
- − S_R2  ajustements comptables
- − S_R3  lignes non-produit validées (détail par sous-catégorie)
- − S_R4  annulations incohérentes (montant saisi)
- − S_R6 − S_R7 − S_R8                        (montants nuls, affichés pour mémoire)
- − S_R9  retours hors facture C (montant saisi)
- + S_R2          si O2 = ajustements dans le CA net
- − Σ |m|(R4)     si O3 = retours à signe corrigé
- + S_R9          si O4 = retours
- = CAN
+CAN = Σ_i c_i                                   (définition)
+Pont : M_brut + Σ_i (c_i − m_i) = Σ_i c_i       (R1 : m non calculable, hors M_brut, c = 0)
 ```
 
-Contrôle ✓/✗ : le résultat du pont égale le CAN calculé directement (`VB + RS`, plus `S_R2` si
-O2). *(v3 : la v2 ne présentait que le pont des options par défaut ; il ne retombait pas sur le CAN
-quand O2, O3 ou O4 étaient activées — annexe D.)*
+Le pont est présenté **une ligne par groupe** (catégorie × traitement), chaque ligne du fichier
+appartenant à **un seul** groupe ; colonnes : lignes, Σ `m` saisi, Σ `c` contribution, écart
+`Σc − Σm`. Il n'y a plus d'étape « retirer puis réintégrer » : une ligne R4 traitée par O3 apparaît
+une fois, avec `m = +20`, `c = −20`, écart `−40`.
+
+Contrôles ✓/✗ affichés : (1) chaque ligne figure dans exactement un groupe ; (2) `Σ m` des groupes
+= `M_brut` ; (3) pont = `Σ c` = CAN calculé directement (`VB + RS`). O2 n'intervient pas dans ce
+pont (la CANA est affichée à part : `CANA = CAN + S_R2`).
 
 ### 6.3 Avant / après par règle
 
-Pour chaque règle ou option réversible : KPI principaux (VB, R, CAN, C, PM, UP, clients actifs)
-avec le réglage courant et avec ce seul réglage inversé, et l'écart. Clic → lignes concernées
+Pour chaque règle ou option réversible : **tous** les KPI principaux (VB, R, CAN, CANA, TR, C,
+PM, UP, UG, PU, factures sans vente payante, clients actifs, VB identifié, PVA, FCI) avec le
+réglage courant et avec ce seul réglage inversé, et l'écart. Clic → lignes concernées
 (paginées, export CSV).
 
 ## 7. API, interface, vérification, acceptation
@@ -322,7 +352,11 @@ avec le réglage courant et avec ce seul réglage inversé, et l'écart. Clic �
      sans réutiliser le module ;
   4. une procédure Excel permet de retrouver le CA net d'un mois ;
   5. tous les tests des étapes 1–2 restent verts, en CI Linux et Windows ;
-  6. objectif de performance : KPI sur 1,07 M lignes en moins de 10 s (à mesurer et consigner).
+  6. performance : objectif de calcul des KPI sur 1,07 M lignes en moins de 10 s. **Après
+     implémentation**, mesure sur le fichier synthétique de même gabarit dans l'environnement de
+     développement, et script `scripts/bench_kpi.py` à exécuter sur le **fichier réel** (temps
+     d'import, de calcul des KPI, mémoire). Seules des mesures réellement exécutées seront
+     consignées, avec date, machine et version.
 - **Acceptation** : partition exhaustive et réconciliations exactes sur le fichier réel ; aucune
   exclusion de code sans validation ; impacts avant/après visibles ; KPI clients limités aux
   lignes identifiées ; périodes partielles et trous distingués ; résultats et limites consignés
@@ -354,22 +388,38 @@ Codes validés : `POST` → Frais de port, `D` → Remise. `GIFTX1` est atypique
 **Intégrité (§6.1)** : 16 lignes = 1 (R0) + 1 (R1) + 1 (R2) + 2 (R3) + 1 (R4) + 1 (R5) + 1 (R6) + 2 (R7) + 1 (R8) + 1 (R9) + 4 (R10) ✓ ; `M_brut = 42,00 £` (15 montants
 calculables) = Σ S_k ✓.
 
-**Pont (§6.2)** : 42,00 − 20,00 (R0) − (−50,00) (R2) − 2,00 (R3 : +5 port −3 remise) −
-20,00 (R4) − 0 (R6, R7, R8) − (−20,00) (R9) = **70,00 £** = S_R10 + S_R5 = 80,00 − 10,00 ✓.
+**Pont (§6.2), configuration par défaut**, une ligne par groupe :
+
+| Groupe | Lignes | Σ m saisi | Σ c | Écart |
+|---|---|---|---|---|
+| Ventes valides (R10) | 1, 5, 14, 16 | 80 | 80 | 0 |
+| Retours produits (R5) | 7 | −10 | −10 | 0 |
+| Exclu R0 doublon | 2 | 20 | 0 | −20 |
+| Exclu R1 valeur manquante | 15 | n.c. | 0 | 0 |
+| Exclu R2 ajustement | 10 | −50 | 0 | +50 |
+| Exclu R3 non-produit (port +5, remise −3) | 4, 8 | 2 | 0 | −2 |
+| Exclu R4 C incohérente | 9 | 20 | 0 | −20 |
+| Exclu R6, R7, R8 (montants nuls) | 13 ; 3, 6 ; 11 | 0 | 0 | 0 |
+| Exclu R9 retour hors C | 12 | −20 | 0 | +20 |
+| **Total** | **16 lignes, chacune une fois** | **42 = M_brut** | **70 = CAN** | **+28** |
+
+`42 + 28 = 70` ✓.
 
 **KPI** : VB = 80,00 · Retours R = 10,00 · **CAN = 70,00** · TR = 12,5 % · Commandes = 4
 (1001, 1002, 1011, 1013 ; la facture 1003, 100 % gratuite, n'en est pas une ; la facture 1001
 compte malgré sa ligne gratuite) · PM = 20,00 · UP = 7 · UG = 5 · CA net après remises = 67,00 ·
-Montant facturé = 72,00 · Clients actifs = 2 · Part du CA sans client = 37,5 % · Bandeau
+Facturation client indicative = 72,00 · Clients actifs = 2 · Part des ventes brutes non
+rattachées à un client = 30 / 80 = 37,5 % (1 ligne de vente) · Bandeau
 « dont 20,00 £ issus de 1 code non validé ».
 
 **Scénarios avant / après — tous les KPI** (recalculés par `verif_annexe_a.py`) :
 
-| KPI | S0 défaut | S1 doublons inclus | S2 ajust. dans CA | S3 C incoh. = retours | S4 hors C = retours | S5 GIFTX1 = bon cadeau |
+| KPI | S0 défaut | S1 doublons inclus | S2 O2 : CANA affichée | S3 C incoh. = retours | S4 hors C = retours | S5 GIFTX1 = bon cadeau |
 |---|---|---|---|---|---|---|
 | Ventes brutes VB | 80 | 100 | 80 | 80 | 80 | 60 |
 | Retours R | 10 | 10 | 10 | 30 | 30 | 10 |
-| **CA produits net** | **70** | **90** | **20** | **50** | **50** | **50** |
+| **CA produits net** | **70** | **90** | **70** | **50** | **50** | **50** |
+| CA net y c. ajustements (CANA) | — | — | **20** | — | — | — |
 | Taux de retour | 12,5 % | 10,0 % | 12,5 % | 37,5 % | 37,5 % | 16,7 % |
 | Commandes C | 4 | 4 | 4 | 4 | 4 | 3 |
 | Panier moyen | 20,00 | 25,00 | 20,00 | 20,00 | 20,00 | 20,00 |
@@ -379,14 +429,40 @@ Montant facturé = 72,00 · Clients actifs = 2 · Part du CA sans client = 37,5 
 | Factures sans vente payante | 9 | 9 | 9 | 9 | 9 | 10 |
 | Clients actifs | 2 | 2 | 2 | 2 | 2 | 2 |
 | VB clients identifiés | 50 | 70 | 50 | 50 | 50 | 30 |
-| Part du CA sans client | 37,5 % | 30,0 % | 37,5 % | 37,5 % | 37,5 % | 50,0 % |
+| VB non rattachées à un client | 30 | 30 | 30 | 30 | 30 | 30 |
+| Lignes de vente sans identifiant | 1 | 1 | 1 | 1 | 1 | 1 |
+| Part des ventes brutes non rattachées | 37,5 % | 30,0 % | 37,5 % | 37,5 % | 37,5 % | 50,0 % |
 | CA net après remises | 67 | 87 | 67 | 47 | 47 | 47 |
 | **Facturation client indicative** | **72** | **92** | **72** | **52** | **52** | **72** |
 | Codes non validés (£ / lignes) | 20 / 1 | 20 / 1 | 20 / 1 | 20 / 1 | 20 / 1 | 0 / 0 |
-| Pont actif = CAN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Chaque ligne une fois / pont = CAN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-Note S2 : la FCI n'inclut pas les ajustements, même lorsque O2 les ajoute au CA net (limite
-documentée §3.4). Inclure les C incohérentes telles quelles donnerait CAN = 90 : option refusée.
+Note S2 (v4) : O2 n'affecte ni le CAN (70), ni la FCI (72), ni le pont ; elle ajoute la CANA (20).
+Inclure les C incohérentes telles quelles donnerait CAN = 90 : option refusée.
+
+**Les 16 combinaisons de O1 à O4** (recalculées ; « x » = option active) :
+
+| O1 | O2 | O3 | O4 | CAN direct | Σ c registre | Pont | Chaque ligne une fois | CANA |
+|---|---|---|---|---|---|---|---|---|
+| . | . | . | . | 70 | 70 | 70 | ✓ | — |
+| . | . | . | x | 50 | 50 | 50 | ✓ | — |
+| . | . | x | . | 50 | 50 | 50 | ✓ | — |
+| . | . | x | x | 30 | 30 | 30 | ✓ | — |
+| . | x | . | . | 70 | 70 | 70 | ✓ | 20 |
+| . | x | . | x | 50 | 50 | 50 | ✓ | 0 |
+| . | x | x | . | 50 | 50 | 50 | ✓ | 0 |
+| . | x | x | x | 30 | 30 | 30 | ✓ | −20 |
+| x | . | . | . | 90 | 90 | 90 | ✓ | — |
+| x | . | . | x | 70 | 70 | 70 | ✓ | — |
+| x | . | x | . | 70 | 70 | 70 | ✓ | — |
+| x | . | x | x | 50 | 50 | 50 | ✓ | — |
+| x | x | . | . | 90 | 90 | 90 | ✓ | 40 |
+| x | x | . | x | 70 | 70 | 70 | ✓ | 20 |
+| x | x | x | . | 70 | 70 | 70 | ✓ | 20 |
+| x | x | x | x | 50 | 50 | 50 | ✓ | 0 |
+
+**Part des ventes non rattachées quand VB = 0** (fixture : une seule ligne, retour `C9`) :
+VB = 0 → PVA « non calculable », TR et PM « non calculables » (aucune division par zéro).
 
 **Effet de la validation de `GIFTX1` comme « Bon cadeau » (S0 → S5)**
 
@@ -400,7 +476,7 @@ documentée §3.4). Inclure les C incohérentes telles quelles donnerait CAN = 9
 | | Taux de retour | 12,5 % | 16,7 % | Retours inchangés, VB plus faible |
 | | Factures sans vente payante | 9 | 10 | 1013 rejoint la liste (motif « non-produit ») |
 | Clients | Clients actifs | 2 | 2 | 17003 reste actif grâce à la ligne 14 |
-| | VB identifié / part sans client | 50 / 37,5 % | 30 / 50,0 % | La part des ventes anonymes augmente mécaniquement |
+| | VB identifié / part des ventes non rattachées | 50 / 37,5 % | 30 / 50,0 % | VB non rattachées inchangées (30), VB diminue : la part augmente mécaniquement |
 | Facturation | Bons cadeaux BC | 0 | 20 | Montant reclassé, pas supprimé |
 | | **FCI** | **72** | **72** | Inchangée : aucune facture n'a changé |
 | | « Montant facturé » formule v2 | 72 | **52** | **Incohérence corrigée en v3** |
@@ -408,45 +484,53 @@ documentée §3.4). Inclure les C incohérentes telles quelles donnerait CAN = 9
 
 ## Annexe B — Tests qui confirmeront l'exactitude
 
-À écrire **avant** le code de calcul (ils doivent échouer, puis passer) :
+À écrire **avant** le code de calcul (ils doivent échouer, puis passer). **Statut au 19/10/2026 :
+aucun de ces tests n'est écrit ni exécuté** ; seules les valeurs attendues ont été produites par
+l'oracle `verif_annexe_a.py` (voir §8).
 
-| Test | Vérifie |
-|---|---|
-| `test_annexe_a_categories` | Catégorie attendue pour chacune des 16 lignes |
-| `test_annexe_a_integrity` | Σ N_k = 16 ; Σ S_k = M_brut = 42 ; R1 non calculable |
-| `test_annexe_a_scenarios[S0…S5]` | **Vecteur complet** des KPI de la table de l'annexe A pour chaque scénario |
-| `test_bridge_equals_net_for_every_option` | Pont actif = CAN pour S0…S5 et pour toutes les combinaisons O1–O4 (16) |
-| `test_validation_reclassifies_without_changing_billing` | S0 → S5 : FCI = 72 constante ; VB, C, UP, clients changent comme indiqué |
-| `test_no_double_subtraction` | `CAN = VB + RS = VB − R = Σ m(R10 ∪ R5)` (fixture + 1 000 lignes aléatoires) |
-| `test_partition_exhaustive_random` | Toute combinaison préfixe × signe Q × signe P × manquants tombe dans exactement une catégorie |
-| `test_free_lines_do_not_block_orders` | 1001 est une commande malgré sa ligne gratuite ; 1003 n'en est pas une |
-| `test_missing_values_excluded_everywhere` | Une ligne R1 n'apparaît dans aucun KPI ni série, mais dans l'intégrité |
-| `test_invoices_without_paid_sale` | 9 factures en S0 avec leurs motifs ; 10 en S5 |
-| `test_r9_option` | O4 change R, CAN, TR, FCI ; jamais VB, C, UP |
-| `test_coverage_empty_days_not_incomplete` | Fixture annexe C : statuts, couvertures, jours vides, trous |
-| `test_coverage_iso_weeks` | 2024-W01 complète, 2024-W06 complète malgré 2 jours vides, 2024-W11 partielle 5/7 |
-| `test_empty_month_inside_window` | Mois sans ligne = complet, 29 jours vides, signalé comme trou |
-| `test_oracle_agreement` | Sur l'échantillon synthétique retail (18 337 lignes) : l'application et `verif_annexe_a.py` (adapté) donnent les mêmes KPI |
-| Non-régression | Les 56 tests backend et 8 tests frontend existants restent verts (CI Linux + Windows) |
+| Test | Vérifie | Statut |
+|---|---|---|
+| `test_annexe_a_categories` | Catégorie attendue pour chacune des 16 lignes | Non écrit |
+| `test_annexe_a_integrity` | Σ N_k = 16 ; Σ S_k = M_brut = 42 ; R1 non calculable | Non écrit |
+| `test_annexe_a_scenarios[S0…S5]` | **Vecteur complet** des KPI de la table de l'annexe A pour chaque scénario | Non écrit |
+| `test_ledger_each_line_once[16 combinaisons]` | Chaque ligne dans un seul groupe du pont ; Σ m = M_brut ; pont = Σ c = CAN direct, pour les 16 combinaisons O1–O4 (table annexe A) | Non écrit |
+| `test_o2_is_separate_indicator` | O2 : CANA = CAN + S_R2 ; VB, R, CAN, TR, C, PM, UP, PVA, FCI et pont inchangés | Non écrit |
+| `test_unattached_sales_share` | PVA = VB_anonyme / VB ; VB = 0 → non calculable (pas d'exception, pas de 0 %) | Non écrit |
+| `test_coverage_calendar_verification` | Sans calendrier : « non vérifiée » partout ; calendrier « fermé le samedi » : janvier écart 3 j, février écart 9 j, mars conforme | Non écrit |
+| `test_no_closure_wording` | Aucun libellé « fermeture » produit sans calendrier déclaré | Non écrit |
+| `test_validation_reclassifies_without_changing_billing` | S0 → S5 : FCI = 72 constante ; VB, C, UP, clients changent comme indiqué | Non écrit |
+| `test_no_double_subtraction` | `CAN = VB + RS = VB − R = Σ m(R10 ∪ R5)` (fixture + 1 000 lignes aléatoires) | Non écrit |
+| `test_partition_exhaustive_random` | Toute combinaison préfixe × signe Q × signe P × manquants tombe dans exactement une catégorie | Non écrit |
+| `test_free_lines_do_not_block_orders` | 1001 est une commande malgré sa ligne gratuite ; 1003 n'en est pas une | Non écrit |
+| `test_missing_values_excluded_everywhere` | Une ligne R1 n'apparaît dans aucun KPI ni série, mais dans l'intégrité | Non écrit |
+| `test_invoices_without_paid_sale` | 9 factures en S0 avec leurs motifs ; 10 en S5 | Non écrit |
+| `test_r9_option` | O4 change R, CAN, TR, FCI ; jamais VB, C, UP | Non écrit |
+| `test_coverage_empty_days_not_incomplete` | Fixture annexe C : position « intérieure » de janvier et février malgré 7 et 13 jours sans données ; jours avec données 24/31, 16/29, 13/15 ; interruption 10–20/02 ; 15–17/01 non signalé (< 7 j) | Non écrit |
+| `test_coverage_iso_weeks` | 2024-W01 intérieure, 2024-W06 intérieure malgré 2 jours sans données, 2024-W11 en bord 5/7 | Non écrit |
+| `test_empty_month_inside_window` | Mois sans ligne = intérieur, 0/29 jours avec données, KPI « aucune donnée », interruption 31/01 → 29/02 | Non écrit |
+| `test_oracle_agreement` | Sur l'échantillon synthétique retail (18 337 lignes) : l'application et `verif_annexe_a.py` (adapté) donnent les mêmes KPI | Non écrit |
+| Non-régression | Les 56 tests backend et 8 tests frontend existants restent verts (CI Linux + Windows) | Exécutés le 19/10 (avant étape 3) : 56/56 et 8/8 réussis |
 
 ## Annexe C — Fixture de couverture temporelle
 
 Lignes chaque jour du 01/01/2024 au 15/03/2024, **sauf** : tous les samedis ; du 15 au 17/01
 (3 jours) ; du 10 au 20/02 (11 jours). Fenêtre = 01/01/2024 → 15/03/2024. Résultats recalculés :
 
-| Période | Statut | Couverture | Jours sans données | Trou ≥ 7 jours |
-|---|---|---|---|---|
-| Janvier 2024 | **Complète** | 31/31 | 7 (4 samedis + 15–17/01) | Non (3 jours < 7) |
-| Février 2024 | **Complète** | 29/29 | 13 (2 samedis isolés + 10–20/02) | **Oui : 10/02 → 20/02, 11 jours** |
-| Mars 2024 | **Partielle (bord)** | 15/31 | 2 (samedis 2 et 9) | Non |
-| Semaine 2024-W01 | Complète | 7/7 | — | — |
-| Semaine 2024-W11 | Partielle | 5/7 | — | — |
+| Période | Position | Jours avec données | Couverture vérifiée — sans calendrier | — avec calendrier « sans activité le samedi » | Interruption ≥ 7 j |
+|---|---|---|---|---|---|
+| Janvier 2024 | Intérieure | 24/31 | Non vérifiée | Écart : 3 jours attendus sans données (15–17/01) | Non |
+| Février 2024 | Intérieure | 16/29 | Non vérifiée | Écart : 9 jours attendus sans données | **Oui : 10/02 → 20/02 (11 j)** |
+| Mars 2024 | En bord (15/31 jours dans la fenêtre) | 13/15 | Non vérifiée | Conforme | Non |
+| Semaine 2024-W01 | Intérieure (7/7) | — | — | — | — |
+| Semaine 2024-W06 | Intérieure (7/7), 2 jours sans données | — | — | — | — |
+| Semaine 2024-W11 | En bord (5/7) | — | — | — | — |
 
-Jours vides par jour de semaine : samedi 10/10 (fermeture structurelle) ; lundi 3/11, mardi 3/11,
-mercredi 2/11, jeudi 1/11, vendredi 1/11, dimanche 2/10.
+Jours sans données par jour de semaine (constat, sans interprétation) : samedi 10/10, lundi 3/11,
+mardi 3/11, mercredi 2/11, jeudi 1/11, vendredi 1/11, dimanche 2/10.
 
 Second cas : données du 02/01 au 30/01 puis du 01/03 au 19/03/2024, rien en février → février
-**complète** avec 29 jours sans données, trou du 31/01 au 29/02 (30 jours).
+**intérieur**, 0/29 jour avec données, KPI « aucune donnée », interruption du 31/01 au 29/02
+(30 jours).
 
 ## Annexe D — Résultat du recalcul indépendant de la v2
 
@@ -462,3 +546,30 @@ v3 :
 Autres précisions v3 : R1 étendu à `Invoice` et `InvoiceDate` ; R7 non réversible (définition) ;
 « Total enregistré » supprimé ; options O1–O5 formalisées ; factures sans vente payante, valeurs
 manquantes et retours hors C détaillés (§3.6–3.8) ; mois vide à l'intérieur de la fenêtre.
+
+## Annexe E — Revue de cohérence v3 → v4
+
+Recalcul par l'oracle v4 (registre ligne par ligne) : **126/126 cellules** de la table de
+l'annexe A concordantes ; **16/16 combinaisons** O1–O4 : chaque ligne contribue une seule fois,
+`Σ m = M_brut`, pont = `Σ c` = CAN direct. Changements v4 :
+
+1. Pont fondé sur un registre (une ligne = un groupe) au lieu de « retirer puis réintégrer ».
+2. O2 n'est plus une modification du CAN mais un indicateur distinct (CANA). Conséquence : la
+   cellule « CA produits net » du scénario S2 passe de 20 (v3) à **70** ; 20 devient la CANA.
+3. Couverture : position dans la fenêtre, jours avec données et couverture vérifiée sont séparés ;
+   plus aucun libellé « fermeture » sans calendrier déclaré ; « Complète » remplacé par
+   « Intérieure ».
+4. Clients : « part des ventes brutes non rattachées à un client identifié », formule et cas
+   VB = 0 documentés.
+
+## 8. État réel des vérifications (au 19/10/2026)
+
+| Vérification | Exécutée ? | Résultat |
+|---|---|---|
+| Oracle `verif_annexe_a.py` (valeurs attendues de la spécification) | Oui, 19/10 | Tables lues **directement dans ce fichier .md** et comparées au recalcul : annexe A 108/108 cellules, 16 combinaisons 16/16 (chaque ligne une fois, pont = CAN) ; VB = 0 → non calculable ; couverture conforme à l'annexe C |
+| Tests de l'étape 3 (annexe B) | **Non** — pas encore écrits | — |
+| Code de l'étape 3 | **Non** — pas encore écrit | — |
+| Tests existants étapes 1–2 (`pytest`, `vitest`) | Oui, 19/10 (avant étape 3) | 56/56 et 8/8 réussis |
+| CI GitHub Actions (Linux + Windows) | Oui, sur chaque commit jusqu'à la v3 de cette spécification | Réussie |
+| Performance des KPI (synthétique et fichier réel 1,07 M lignes) | **Non** — sera mesurée après implémentation | — |
+| Import du vrai Online Retail II, 2 feuilles | **Non** — à exécuter par l'utilisateur | — |
