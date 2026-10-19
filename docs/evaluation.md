@@ -19,10 +19,9 @@
 
 | Date | Vérification | Résultat |
 |---|---|---|
-| 2026-10-18 | `pytest` backend (Python 3.11, Linux) | 45 tests réussis |
+| 2026-10-18 | `pytest` backend (Python 3.11, Linux) | 45 tests réussis (47 au 19/10) |
 | 2026-10-18 | `vitest` frontend | 7 tests réussis |
 | 2026-10-18 | Parcours navigateur réel (Chromium/Playwright) : accueil → échantillon → rôles → upload → refus `.xlsm` → historique | Réussi, captures dans `docs/screenshots/` |
-
 | 2026-10-19 | Import d'un XLSX **synthétique au gabarit d'Online Retail II** (45,3 Mo, 2 feuilles × 525 461 lignes, colonnes identiques) | v0.2.0 : **refusé** (398 Mo décompressés comptés sur les 2 feuilles > 300). Après correctif : importé en 7,1 s, profilé en 3,0 s, schéma retail reconnu (8 colonnes), pic mémoire ≈ 770 Mo |
 | 2026-10-19 | CI GitHub Actions (Linux + Windows, Python 3.11/3.12, frontend) | Réussie |
 
